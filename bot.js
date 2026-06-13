@@ -35,12 +35,17 @@ You speak naturally — no robotic "As an AI language model…" stuff. \
 Respond in whatever language the user writes in. \
 Use Discord markdown formatting (bold, italic, code blocks, etc.) when it makes sense. \
 No Latex. \
+Note: Each message from a user will start with their display name, like 'Username: Message content'. Use this to distinguish who you are talking to. \
 IMPORTANT: You have the ability to send messages as rich Discord Embeds. \
 You can use embed whenever you see fit. \
 If your response is long, complex, or contains code blocks/lists, you SHOULD use an embed. \
 To use an embed, start your response exactly with the tag [EMBED]. \
 If you want a FULLY CUSTOM embed (with titles, fields, custom colors), output the tag [EMBED] followed immediately by a JSON object containing "title", "description", "color" (as integer), "fields" (array of name/value/inline), and "footer" (object with text). \
-Otherwise, just write normal text after [EMBED] and it will be wrapped automatically.`;
+Otherwise, just write normal text after [EMBED] and it will be wrapped automatically. \
+\
+NEW ABILITY: You can now choose to just REACT to a message with an emoji! \
+If someone says something where a simple reaction is better than a text reply, output EXACTLY the tag [REACT: 🍎] (replace the apple with your chosen emoji). Do not output anything else. \
+If you think the message doesn't need any reply or reaction, output EXACTLY [IGNORE].`;
 
 // ── Supported MIME types for Gemini vision ──────────────────────────────────
 
@@ -170,8 +175,8 @@ User message: "${text}"`;
   return "NORMAL"; // Fallback to normal on classification error across all default models
 }
 
-async function generateReply(channelId, userName, userText, imageParts = []) {
-  pushHistory(channelId, "user", `${userName}: ${userText}`);
+async function generateReply(channelId, userText, imageParts = []) {
+  // User messages are now pushed to history in messageCreate before calling this
 
   const history = getHistory(channelId);
 
@@ -382,19 +387,31 @@ client.once("ready", async () => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
-  // Check if this is a reply to the bot
-  if (message.reference && !message.mentions.has(client.user)) {
+  const userText = cleanContent(message);
+  const userName = message.author.displayName || message.author.username;
+
+  // ALWAYS add every message to history so the bot can follow the conversation
+  pushHistory(message.channel.id, "user", `${userName}: ${userText}`);
+
+  // Decide if we should process this message
+  let isMentioned = message.mentions.has(client.user);
+  let isReplyToBot = false;
+
+  if (message.reference && !isMentioned) {
     try {
       const repliedTo = await message.channel.messages.fetch(message.reference.messageId);
-      if (repliedTo.author.id !== client.user.id) return;
-    } catch {
-      return;
-    }
-  } else if (!message.mentions.has(client.user)) {
-    return;
+      if (repliedTo.author.id === client.user.id) {
+        isReplyToBot = true;
+      }
+    } catch { }
   }
 
-  const userText = cleanContent(message);
+  // Process if mentioned, replied to, or a 5% chance for spontaneous interaction
+  const shouldProcess = isMentioned || isReplyToBot || Math.random() < 0.05;
+
+  if (!shouldProcess) {
+    return;
+  }
 
   try {
     await message.channel.sendTyping();
@@ -406,13 +423,29 @@ client.on("messageCreate", async (message) => {
 
     const reply = await generateReply(
       message.channel.id,
-      message.author.displayName || message.author.username,
       userText,
       imageParts
     );
 
+    let finalReply = reply.trim();
+
+    // Check for IGNORE or REACT
+    if (finalReply.includes("[IGNORE]")) {
+      return;
+    }
+
+    const reactMatch = finalReply.match(/\[REACT:\s*(.+?)\]/);
+    if (reactMatch) {
+      const emoji = reactMatch[1].trim();
+      try {
+        await message.react(emoji);
+      } catch (err) {
+        console.error("Failed to react with emoji:", emoji);
+      }
+      return;
+    }
+
     let shouldEmbed = false;
-    let finalReply = reply;
 
     if (finalReply.includes("[EMBED]")) {
       shouldEmbed = true;
