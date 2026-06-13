@@ -407,7 +407,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // Process if mentioned, replied to, or a 5% chance for spontaneous interaction
-  const shouldProcess = isMentioned || isReplyToBot || Math.random() < 0.05;
+  const shouldProcess = isMentioned || isReplyToBot || Math.random() < 0.5;
 
   if (!shouldProcess) {
     return;
