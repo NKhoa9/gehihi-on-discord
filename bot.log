@@ -1,0 +1,132 @@
+[2026-06-13T10:42:17.507Z] [INFO] 🤖 Logged in as AIUEAPP#9842
+[2026-06-13T10:42:17.513Z] [INFO] 📡 Connected to 1 server(s)
+[2026-06-13T10:42:18.156Z] [INFO] ✅ Slash commands synced
+[2026-06-13T10:43:14.306Z] [INFO] [Message] manhhh (1208424056265642006) in 1459220095304995002: <@767309414008487967> bt ai đây ko :>?
+[2026-06-13T10:56:46.011Z] [INFO] 🤖 Logged in as AIUEAPP#9842
+[2026-06-13T10:56:46.014Z] [INFO] 📡 Connected to 1 server(s)
+[2026-06-13T10:56:46.479Z] [INFO] ✅ Slash commands synced
+[2026-06-13T10:57:03.350Z] [INFO] [Command] ksatoshi0993 used /join
+[2026-06-13T10:59:19.511Z] [INFO] 🤖 Logged in as AIUEAPP#9842
+[2026-06-13T10:59:19.522Z] [INFO] 📡 Connected to 1 server(s)
+[2026-06-13T10:59:20.067Z] [INFO] ✅ Slash commands synced
+[2026-06-13T10:59:30.224Z] [INFO] [Command] ksatoshi0993 used /join
+[2026-06-13T10:59:31.964Z] [INFO] WebSocket connection to Gemini Live opened.
+[2026-06-13T10:59:32.152Z] [INFO] Gemini Live WebSocket closed.
+[2026-06-13T10:59:48.721Z] [INFO] [Command] ksatoshi0993 used /join
+[2026-06-13T10:59:50.209Z] [INFO] WebSocket connection to Gemini Live opened.
+[2026-06-13T10:59:50.366Z] [INFO] Gemini Live WebSocket closed.
+[2026-06-13T11:01:16.526Z] [INFO] 🤖 Logged in as AIUEAPP#9842
+[2026-06-13T11:01:16.532Z] [INFO] 📡 Connected to 1 server(s)
+[2026-06-13T11:01:16.926Z] [INFO] ✅ Slash commands synced
+[2026-06-13T11:01:24.782Z] [INFO] [Command] ksatoshi0993 used /join
+[2026-06-13T11:01:26.682Z] [INFO] WebSocket connection to Gemini Live opened.
+[2026-06-13T11:01:26.853Z] [INFO] Gemini Live WebSocket closed. Code: 1008, Reason: models/gemini-3-flash-live is not found for API version v1alpha, or is not supported for bidiGenerateContent. Call ModelSer
+[2026-06-13T11:03:28.988Z] [INFO] 🤖 Logged in as AIUEAPP#9842
+[2026-06-13T11:03:28.990Z] [INFO] 📡 Connected to 1 server(s)
+[2026-06-13T11:03:29.489Z] [INFO] ✅ Slash commands synced
+[2026-06-13T11:03:29.755Z] [INFO] [Command] ksatoshi0993 used /join
+[2026-06-13T11:03:31.507Z] [INFO] WebSocket connection to Gemini Live opened.
+[2026-06-13T11:03:31.673Z] [INFO] Gemini Live WebSocket closed. Code: 1008, Reason: models/gemini-2.0-flash-exp is not found for API version v1alpha, or is not supported for bidiGenerateContent. Call ModelSe
+[2026-06-13T11:04:02.664Z] [INFO] 🤖 Logged in as AIUEAPP#9842
+[2026-06-13T11:04:02.668Z] [INFO] 📡 Connected to 1 server(s)
+[2026-06-13T11:04:03.146Z] [INFO] ✅ Slash commands synced
+[2026-06-13T11:04:08.700Z] [INFO] [Command] ksatoshi0993 used /join
+[2026-06-13T11:04:10.712Z] [INFO] WebSocket connection to Gemini Live opened.
+[2026-06-13T11:04:22.069Z] [INFO] Gemini Live WebSocket closed. Code: 1007, Reason: realtime_input.media_chunks is deprecated. Use audio, video, or text instead.
+[2026-06-13T11:06:33.146Z] [INFO] 🤖 Logged in as AIUEAPP#9842
+[2026-06-13T11:06:33.152Z] [INFO] 📡 Connected to 1 server(s)
+[2026-06-13T11:06:33.561Z] [INFO] ✅ Slash commands synced
+[2026-06-13T11:06:38.036Z] [INFO] [Command] ksatoshi0993 used /join
+[2026-06-13T11:06:41.140Z] [INFO] WebSocket connection to Gemini Live opened.
+[2026-06-13T11:07:18.980Z] [INFO] Gemini Live WebSocket closed. Code: 1011, Reason: Resource has been exhausted (e.g. check quota).
+[2026-06-13T11:11:45.490Z] [INFO] 🤖 Logged in as AIUEAPP#9842
+[2026-06-13T11:11:45.492Z] [INFO] 📡 Connected to 1 server(s)
+[2026-06-13T11:11:45.912Z] [INFO] ✅ Slash commands synced
+[2026-06-13T11:11:49.577Z] [INFO] [Command] ksatoshi0993 used /join
+[2026-06-13T11:11:51.515Z] [INFO] WebSocket connection to Gemini Live opened.
+[2026-06-13T11:12:04.149Z] [ERROR] Gemini PCM resampler error: Error [ERR_STREAM_PREMATURE_CLOSE]: Premature close
+[2026-06-13T11:13:23.061Z] [ERROR] Opus decoder error: RuntimeError: memory access out of bounds
+[2026-06-13T11:13:25.096Z] [ERROR] Opus decoder error: RuntimeError: memory access out of bounds
+[2026-06-13T11:13:34.516Z] [ERROR] Opus decoder error: RuntimeError: memory access out of bounds
+[2026-06-13T11:13:35.224Z] [ERROR] Opus decoder error: RuntimeError: memory access out of bounds
+[2026-06-13T11:39:07.135Z] [INFO] 🤖 Logged in as AIUEAPP#9842
+[2026-06-13T11:39:07.139Z] [INFO] 📡 Connected to 1 server(s)
+[2026-06-13T11:39:07.631Z] [INFO] ✅ Slash commands synced
+[2026-06-13T11:39:29.353Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: /joi
+[2026-06-13T11:39:38.116Z] [INFO] [Command] ksatoshi0993 used /join
+[2026-06-13T11:39:39.871Z] [INFO] WebSocket connection to Gemini Live opened.
+[2026-06-13T11:40:21.554Z] [INFO] Gemini Live WebSocket closed. Code: 1011, Reason: Resource has been exhausted (e.g. check quota).
+[2026-06-13T11:40:22.981Z] [INFO] WebSocket connection to Gemini Live opened.
+[2026-06-13T11:40:23.132Z] [INFO] Gemini Live WebSocket closed. Code: 1008, Reason: models/gemini-3-flash-live is not found for API version v1alpha, or is not supported for bidiGenerateContent. Call ModelSer
+[2026-06-13T11:40:24.947Z] [INFO] WebSocket connection to Gemini Live opened.
+[2026-06-13T11:40:25.117Z] [INFO] Gemini Live WebSocket closed. Code: 1008, Reason: models/gemini-3.5-live-translate is not found for API version v1alpha, or is not supported for bidiGenerateContent. Call Mo
+[2026-06-13T11:40:26.776Z] [INFO] WebSocket connection to Gemini Live opened.
+[2026-06-13T11:40:26.924Z] [INFO] Gemini Live WebSocket closed. Code: 1008, Reason: models/gemini-2.5-flash-native-audio-dialog is not found for API version v1alpha, or is not supported for bidiGenerateConte
+[2026-06-13T11:41:22.042Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: tf u mean resource exhausted bruh
+[2026-06-13T11:42:33.972Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: /join
+[2026-06-13T11:42:40.091Z] [INFO] [Command] ksatoshi0993 used /join
+[2026-06-13T11:42:43.000Z] [INFO] WebSocket connection to Gemini Live opened.
+[2026-06-13T11:43:06.200Z] [ERROR] Gemini PCM resampler error: Error [ERR_STREAM_PREMATURE_CLOSE]: Premature close
+[2026-06-13T11:43:19.787Z] [ERROR] Gemini PCM resampler error: Error [ERR_STREAM_PREMATURE_CLOSE]: Premature close
+[2026-06-13T11:43:23.223Z] [ERROR] Opus decoder error: RuntimeError: memory access out of bounds
+[2026-06-13T11:54:35.490Z] [INFO] 🤖 Logged in as AIUEAPP#9842
+[2026-06-13T11:54:35.492Z] [INFO] 📡 Connected to 1 server(s)
+[2026-06-13T11:54:35.994Z] [INFO] ✅ Slash commands synced
+[2026-06-13T11:54:42.023Z] [INFO] [Command] ksatoshi0993 used /join
+[2026-06-13T11:54:45.510Z] [INFO] WebSocket connection to Gemini Live opened.
+[2026-06-13T12:04:25.590Z] [INFO] [Command] ksatoshi0993 used /leave
+[2026-06-13T12:04:43.697Z] [INFO] [Command] ksatoshi0993 used /leave
+[2026-06-13T12:04:46.766Z] [INFO] Gemini Live WebSocket closed. Code: 1008, Reason: Connection aborted because the client failed to close the connection after receiving a GoAway signal once the session durat
+[2026-06-13T12:11:49.550Z] [INFO] 🤖 Logged in as AIUEAPP#9842
+[2026-06-13T12:11:49.552Z] [INFO] 📡 Connected to 1 server(s)
+[2026-06-13T12:11:50.155Z] [INFO] ✅ Slash commands synced
+[2026-06-13T12:12:03.907Z] [INFO] [Command] ksatoshi0993 used /join
+[2026-06-13T12:12:05.652Z] [INFO] WebSocket connection to Gemini Live opened.
+[2026-06-13T12:13:32.507Z] [INFO] [Command] ksatoshi0993 used /leave
+[2026-06-13T12:13:38.165Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: gud
+[2026-06-13T12:14:17.231Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: AYE SIRR
+IT WORKED  
+those token limits cant stop me 😍
+[2026-06-13T12:14:44.217Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: nah I didnt break anything
+[2026-06-13T12:15:28.258Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: but well, now I have an AIUEAPP that can join vc and chat with gemini live models
+[2026-06-13T12:15:56.924Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: bruh I'm Lukas
+[2026-06-13T12:16:04.552Z] [INFO] Gemini Live WebSocket closed. Code: 1008, Reason: The operation was aborted.
+[2026-06-13T12:20:19.357Z] [INFO] 🤖 Logged in as AIUEAPP#9842
+[2026-06-13T12:20:19.359Z] [INFO] 📡 Connected to 1 server(s)
+[2026-06-13T12:20:20.050Z] [INFO] ✅ Slash commands synced
+[2026-06-13T12:21:02.733Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: ôi vãi l
+[Log]
+ws.on('close', (code, reason) => {
+    logger.log(`Gemini Live WebSocket closed. Code
+[2026-06-13T12:21:39.680Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: imma test again later ahh
+[2026-06-13T12:22:25.647Z] [INFO] [Command] ksatoshi0993 used /join
+[2026-06-13T12:22:27.838Z] [INFO] WebSocket connection to Gemini Live opened.
+[2026-06-13T12:22:47.795Z] [ERROR] Gemini PCM resampler error: Error [ERR_STREAM_PREMATURE_CLOSE]: Premature close
+[2026-06-13T12:23:18.613Z] [INFO] [Command] ksatoshi0993 used /leave
+[2026-06-13T12:23:30.724Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: bon bot đâu chat tiếp
+[2026-06-13T12:23:54.583Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: ngồi chan chat lúc nữa xem terminal nó có quẳng error ko :v
+[2026-06-13T12:24:32.381Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: brah da hel
+[2026-06-13T12:25:45.646Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: heh, tính ra cx cho rộng phết đấy chứ nhề
+[2026-06-13T12:25:48.890Z] [INFO] Gemini Live WebSocket closed. Code: 1008, Reason: The operation was aborted.
+[2026-06-13T12:26:41.779Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: bruh wtf?
+th it nhất nó ko kill luôn con bon bot
+[2026-06-13T12:29:47.872Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: mịe, tht ra h cx ok r đấy, nma nếu cứ để nnay mà push thì **HƠI** OCD
+[2026-06-13T12:31:16.280Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: ôi th =)))
+thảo nào tự nhiên nó gen nhanh thế =))
+[2026-06-13T12:35:02.103Z] [INFO] [Message] Lukas姱 (767309414008487967) in 1459220095304995003: Nhanh... ~~nma ngu~~
+Mình nói nó ko hiểu =)))
+Xong toàn ngồi xàm xàm, code thì đ fix ô dume =))(
+Tht
+[2026-06-13T12:36:30.274Z] [INFO] [Message] Lukas姱 (767309414008487967) in 1459220095304995003: Juan luôn, thế nên là tk nào thấy cái lỗi đấy thì kêm nó hộ t 🗿🔥
+V là xong 💥
+[2026-06-13T13:03:21.135Z] [INFO] [Message] Lukas姱 (767309414008487967) in 1463869662843633719: nhìn mặt này có phải bị lác ko?
+[2026-06-13T13:04:37.178Z] [INFO] [Message] Lukas姱 (767309414008487967) in 1463869662843633719: Ko, nhìn y học tí đi
+Thấy cái 1 bên nó chính giữa trung tâm còn bên kí nó hơi lệch ko?
+[2026-06-13T13:06:03.114Z] [INFO] [Message] Lukas姱 (767309414008487967) in 1463869662843633719: Thì đúng là lác r còn j?
+Đợt t bị ông cắt kính bìm bịp t master mấy cái tật khúc xạ r :v
+[2026-06-13T13:06:52.777Z] [INFO] [Command] khoa.lukas.9 used /join
+[2026-06-13T13:06:55.370Z] [INFO] WebSocket connection to Gemini Live opened.
+[2026-06-13T13:15:15.819Z] [INFO] [Command] ksatoshi0993 used /leave
+[2026-06-13T13:15:34.879Z] [INFO] [Message] Lukas姱 (767309414008487967) in 1459220095304995003: Lmao what
+[2026-06-13T13:16:56.624Z] [INFO] Gemini Live WebSocket closed. Code: 1008, Reason: Connection aborted because the client failed to close the connection after receiving a GoAway signal once the session durat
+[2026-06-13T13:17:43.921Z] [INFO] [Message] s̴̰̆á̵̮t̷̪̽ǫ̷̊s̸̫͂ḣ̴̨i̴̭͝ (762109221960548382) in 1459220095304995003: everyone plz ignore this error 🤷‍♂️
