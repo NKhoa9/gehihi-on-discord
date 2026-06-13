@@ -1,6 +1,29 @@
 import "dotenv/config";
 import { Client, GatewayIntentBits, ActivityType, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from "discord.js";
 import { GoogleGenAI } from "@google/genai";
+import fs from "fs";
+
+// ── Logger Setup ────────────────────────────────────────────────────────────
+
+const LOG_FILE = "bot.log";
+
+const logger = {
+  log: (...args) => {
+    const msg = `[${new Date().toISOString()}] [INFO] ${args.map(a => typeof a === 'object' && !(a instanceof Error) ? JSON.stringify(a) : a).join(" ")}`;
+    console.log(msg);
+    fs.appendFileSync(LOG_FILE, msg + "\n");
+  },
+  warn: (...args) => {
+    const msg = `[${new Date().toISOString()}] [WARN] ${args.map(a => typeof a === 'object' && !(a instanceof Error) ? JSON.stringify(a) : a).join(" ")}`;
+    console.warn(msg);
+    fs.appendFileSync(LOG_FILE, msg + "\n");
+  },
+  error: (...args) => {
+    const msg = `[${new Date().toISOString()}] [ERROR] ${args.map(a => typeof a === 'object' && !(a instanceof Error) ? JSON.stringify(a) : a).join(" ")}`;
+    console.error(msg);
+    fs.appendFileSync(LOG_FILE, msg + "\n");
+  }
+};
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -140,7 +163,7 @@ async function attachmentsToParts(attachments) {
         },
       });
     } catch (err) {
-      console.error(`Failed to download attachment ${att.name}:`, err.message);
+      logger.error(`Failed to download attachment ${att.name}:`, err.message);
     }
   }
 
@@ -169,7 +192,7 @@ User message: "${text}"`;
       if (reply.includes("2")) return "THINKING";
       return "NORMAL";
     } catch (err) {
-      console.warn(`Classifier failed on ${model}, trying next...`);
+      logger.warn(`Classifier failed on ${model}, trying next...`);
     }
   }
   return "NORMAL"; // Fallback to normal on classification error across all default models
@@ -248,7 +271,7 @@ async function generateReply(channelId, userText, imageParts = []) {
         }
 
         // Exhausted retries for this specific model or non-429 error
-        console.warn(`${taskType} task failed on ${model}. Error:`, err.message);
+        logger.warn(`${taskType} task failed on ${model}. Error:`, err.message);
         reportedIssue += `⚠️ *(Auto-Fallback: \`${taskType}\` task failed on \`${model}\`. Switching to next model...)*\n\n`;
         break; // break out of retry loop, move to next model
       }
@@ -278,7 +301,7 @@ async function generateReply(channelId, userText, imageParts = []) {
         return replyText;
 
       } catch (err) {
-        console.warn(`Fallback default model ${model} failed. Error:`, err.message);
+        logger.warn(`Fallback default model ${model} failed. Error:`, err.message);
         reportedIssue += `⚠️ *(Auto-Fallback: \`${model}\` failed...)*\n\n`;
       }
     }
@@ -343,9 +366,9 @@ async function registerCommands() {
   const rest = new REST().setToken(DISCORD_TOKEN);
   try {
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-    console.log("✅ Slash commands synced");
+    logger.log("✅ Slash commands synced");
   } catch (err) {
-    console.error("Failed to sync slash commands:", err);
+    logger.error("Failed to sync slash commands:", err);
   }
 }
 
@@ -376,8 +399,8 @@ function cleanContent(message) {
 // ── Events ──────────────────────────────────────────────────────────────────
 
 client.once("ready", async () => {
-  console.log(`🤖 Logged in as ${client.user.tag}`);
-  console.log(`📡 Connected to ${client.guilds.cache.size} server(s)`);
+  logger.log(`🤖 Logged in as ${client.user.tag}`);
+  logger.log(`📡 Connected to ${client.guilds.cache.size} server(s)`);
 
   client.user.setActivity("your RAMs ✨", { type: ActivityType.Playing });
 
@@ -389,6 +412,8 @@ client.on("messageCreate", async (message) => {
 
   const userText = cleanContent(message);
   const userName = message.author.displayName || message.author.username;
+
+  logger.log(`[Message] ${userName} (${message.author.id}) in ${message.channel.id}: ${userText.substring(0, 100)}`);
 
   // ALWAYS add every message to history so the bot can follow the conversation
   pushHistory(message.channel.id, "user", `${userName}: ${userText}`);
@@ -440,7 +465,7 @@ client.on("messageCreate", async (message) => {
       try {
         await message.react(emoji);
       } catch (err) {
-        console.error("Failed to react with emoji:", emoji);
+        logger.error("Failed to react with emoji:", emoji);
       }
       return;
     }
@@ -509,12 +534,14 @@ client.on("messageCreate", async (message) => {
       await message.reply({ content: finalReply, allowedMentions: { repliedUser: false, parse: ['users', 'roles'] } });
     }
   } catch (err) {
-    console.error("Error handling message:", err);
+    logger.error("Error handling message:", err);
   }
 });
 
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
+
+  logger.log(`[Command] ${interaction.user.tag} used /${interaction.commandName}`);
 
   if (interaction.commandName === "clear") {
     clearHistory(interaction.channelId);

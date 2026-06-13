@@ -23,7 +23,16 @@ The AI has full control over its formatting via the `[EMBED]` tag mechanism.
 - **JSON Parsing**: The AI can output raw JSON following the `[EMBED]` tag. The bot intercepts this, strips the tag, and parses the JSON to construct a **fully custom Discord Embed** (supporting `title`, `description`, `color`, `fields`, and `footer`).
 - **Standard Embeds / Text**: If the AI just outputs plain text after the tag, the bot wraps it in a standard Google Blue (`0x4285F4`) embed. If no tag is present, it responds in normal plain text. (Embeds also bypass the 2,000 character limit by utilizing the 4,096 character description limit).
 
-### 3. Attachment & Multimodal Support
+### 3. Autonomous Interaction & Personality
+The bot behaves like a true participant in the server rather than just a command-response tool.
+- **Contextual Awareness**: Every user message in the server is silently added to the conversation history (prefixed with the user's display name). This means the AI always knows the ongoing context and exactly who is speaking, even if it hasn't been directly addressed.
+- **Probability Gate**: To save API quota while still acting autonomously, the bot will randomly "wake up" to process normal, unmentioned chat messages (currently set to a 50% probability via `Math.random() < 0.5`). It will *always* process messages if directly `@mentioned` or replied to.
+- **Dynamic Reactions**: When processing a message, the AI is instructed in its `SYSTEM_PROMPT` that it has full autonomy to:
+  - Output `[REACT: emoji]` to simply react to the message with a chosen emoji.
+  - Output `[IGNORE]` to purposely stay silent and ignore the message.
+  - Output normal text or an `[EMBED]` to join the conversation.
+
+### 4. Attachment & Multimodal Support
 The bot supports reading multiple attachment types natively by converting them to `inlineData` base64 strings before sending them to Gemini.
 - **Supported types**:
   - Images (`png`, `jpeg`, `webp`, `gif`, `heic`, `heif`)
@@ -31,12 +40,12 @@ The bot supports reading multiple attachment types natively by converting them t
   - Audio (`wav`, `mp3`, `mpeg`, `ogg`)
   - Video (`mp4`, `mpeg`, `webm`)
 
-### 4. Memory & Conversation History
+### 5. Memory & Conversation History
 - The bot maintains a per-channel conversation history (`channelHistory` map).
 - It retains the last `MAX_HISTORY` (default 30) messages to maintain context.
 - Users can wipe the current channel's memory using the `/clear` slash command.
 
-### 5. Moderation & Utility Commands
+### 6. Moderation & Utility Commands
 The bot provides a suite of slash commands for server management (requires appropriate Discord permissions):
 - `/ping`: Checks bot latency.
 - `/clear`: Clears the bot's conversation memory for the current channel.
@@ -53,6 +62,6 @@ The bot provides a suite of slash commands for server management (requires appro
 - `MAX_HISTORY`: (Optional) Overrides the default 30-message history limit.
 
 ## Important Notes for Future Development
-- The `messageCreate` event handler requires the bot to be mentioned or replied to directly. It ignores its own messages and other bots.
+- The `messageCreate` event handler reads *all* messages in the channel to build history context, but uses a probability check (`Math.random()`) to decide whether to hit the Gemini API for unmentioned messages to conserve quota. It will always hit the API if directly `@mentioned` or replied to.
 - The bot automatically chunks its responses (whether plain text or embeds) to adhere to Discord's API limits.
 - When expanding the JSON embed schema parsing, ensure `finalReply.match(/\{[\s\S]*\}/)` and the `EmbedBuilder` setters remain heavily sanitized and wrapped in `try/catch` to prevent bot crashes from malformed AI output.
