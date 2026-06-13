@@ -2,6 +2,7 @@ import "dotenv/config";
 import { Client, GatewayIntentBits, ActivityType, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from "discord.js";
 import { GoogleGenAI } from "@google/genai";
 import fs from "fs";
+import { joinAndStartLive, leaveLive } from "./voice.js";
 
 // ── Logger Setup ────────────────────────────────────────────────────────────
 
@@ -318,12 +319,19 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates,
   ],
 });
 
 // ── Slash Commands Registration ─────────────────────────────────────────────
 
 const commands = [
+  new SlashCommandBuilder()
+    .setName("join")
+    .setDescription("Join your current voice channel and start Gemini Live"),
+  new SlashCommandBuilder()
+    .setName("leave")
+    .setDescription("Leave the voice channel"),
   new SlashCommandBuilder()
     .setName("clear")
     .setDescription("Clear the bot's memory for this channel"),
@@ -432,7 +440,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // Process if mentioned, replied to, or a 5% chance for spontaneous interaction
-  const shouldProcess = isMentioned || isReplyToBot || Math.random() < 0.5;
+  const shouldProcess = isMentioned || isReplyToBot || Math.random() < 0.35;
 
   if (!shouldProcess) {
     return;
@@ -542,6 +550,14 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   logger.log(`[Command] ${interaction.user.tag} used /${interaction.commandName}`);
+
+  if (interaction.commandName === "join") {
+    await joinAndStartLive(interaction, logger);
+  }
+
+  if (interaction.commandName === "leave") {
+    await leaveLive(interaction);
+  }
 
   if (interaction.commandName === "clear") {
     clearHistory(interaction.channelId);
