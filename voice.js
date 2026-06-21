@@ -207,6 +207,15 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
       currentAudioStream.end();
       currentAudioStream = null;
     }
+    
+    // Explicitly interrupt the model if it was generating/speaking
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        clientContent: {
+          turnComplete: false
+        }
+      }));
+    }
 
     const audioStream = receiver.subscribe(userId, {
       end: {
@@ -241,6 +250,15 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
       opusDecoder.destroy();
       pcmResampler.destroy();
       activeSpeakers.delete(userId);
+
+      // Signal Gemini that the user has finished speaking to eliminate awkward silence
+      if (activeSpeakers.size === 0 && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          clientContent: {
+            turnComplete: true
+          }
+        }));
+      }
     });
 
     audioStream.pipe(opusDecoder).pipe(pcmResampler);
