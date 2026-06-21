@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { Client, GatewayIntentBits, ActivityType, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from "discord.js";
+import { Client, GatewayIntentBits, ActivityType, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, MessageFlags } from "discord.js";
 import { GoogleGenAI } from "@google/genai";
 import fs from "fs";
 import { joinAndStartLive, leaveLive } from "./voice.js";
@@ -698,7 +698,7 @@ client.on("interactionCreate", async (interaction) => {
     clearHistory(interaction.channelId);
     await interaction.reply({
       content: "🧹 Memory wiped for this channel! Fresh start.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -706,14 +706,14 @@ client.on("interactionCreate", async (interaction) => {
     const latency = Math.round(client.ws.ping);
     await interaction.reply({
       content: `🏓 Pong! \`${latency}ms\``,
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
   if (interaction.commandName === "memories") {
     const memories = getGuildMemories(interaction.guildId);
     if (memories.length === 0) {
-      await interaction.reply({ content: "🧠 No memories saved for this server yet!", ephemeral: true });
+      await interaction.reply({ content: "🧠 No memories saved for this server yet!", flags: MessageFlags.Ephemeral });
     } else {
       const lines = memories.map((m, i) => `**#${i + 1}**: ${m.text}`).join("\n");
       const embed = new EmbedBuilder()
@@ -721,7 +721,7 @@ client.on("interactionCreate", async (interaction) => {
         .setTitle("🧠 Bot Memories")
         .setDescription(lines.substring(0, 4096))
         .setFooter({ text: `${memories.length} memory(s) saved` });
-      await interaction.reply({ embeds: [embed], ephemeral: true });
+      await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
   }
 
@@ -733,21 +733,21 @@ client.on("interactionCreate", async (interaction) => {
     const admins = adminEnv.split(",").map(id => id.trim()).filter(id => id);
     
     if (admins.length === 0) {
-      return interaction.reply({ content: "❌ No admins are configured! Please add your User ID to the `ADMINS` variable in `.env` (comma separated).", ephemeral: true });
+      return interaction.reply({ content: "❌ No admins are configured! Please add your User ID to the `ADMINS` variable in `.env` (comma separated).", flags: MessageFlags.Ephemeral });
     }
     
     if (!admins.includes(interaction.user.id)) {
-      return interaction.reply({ content: "❌ You are not on the bot's admin whitelist.", ephemeral: true });
+      return interaction.reply({ content: "❌ You are not on the bot's admin whitelist.", flags: MessageFlags.Ephemeral });
     }
 
     if (interaction.commandName === "reset_memory") {
       setGuildMemories(interaction.guildId, []);
-      return interaction.reply({ content: "🧠 All AI memories for this server have been completely wiped by an admin.", ephemeral: false });
+      return interaction.reply({ content: "🧠 All AI memories for this server have been completely wiped by an admin." });
     }
 
     if (interaction.commandName === "pause_ai") {
       isAIPaused = !isAIPaused;
-      return interaction.reply({ content: isAIPaused ? "⏸️ AI has been PAUSED globally. It will no longer reply to messages." : "▶️ AI has been UNPAUSED. It will now process messages again.", ephemeral: false });
+      return interaction.reply({ content: isAIPaused ? "⏸️ AI has been PAUSED globally. It will no longer reply to messages." : "▶️ AI has been UNPAUSED. It will now process messages again." });
     }
 
     if (interaction.commandName === "config") {
@@ -758,19 +758,19 @@ client.on("interactionCreate", async (interaction) => {
       // Parse types properly
       if (setting === "max_history" || setting === "silence_duration_ms") {
         newValue = parseInt(valueStr, 10);
-        if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid integer.", ephemeral: true });
+        if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid integer.", flags: MessageFlags.Ephemeral });
       } else if (setting === "random_appear_rate") {
         newValue = parseFloat(valueStr);
-        if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid number (e.g. 0.1).", ephemeral: true });
+        if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid number (e.g. 0.1).", flags: MessageFlags.Ephemeral });
       }
 
       const currentConfig = loadConfig();
       currentConfig[setting] = newValue;
       try {
         fs.writeFileSync("config.json", JSON.stringify(currentConfig, null, 2), "utf-8");
-        return interaction.reply({ content: `✅ Config updated: \`${setting}\` is now \`${newValue}\`. Note: This setting has immediately taken effect!`, ephemeral: true });
+        return interaction.reply({ content: `✅ Config updated: \`${setting}\` is now \`${newValue}\`. Note: This setting has immediately taken effect!`, flags: MessageFlags.Ephemeral });
       } catch (err) {
-        return interaction.reply({ content: `❌ Failed to save config: ${err.message}`, ephemeral: true });
+        return interaction.reply({ content: `❌ Failed to save config: ${err.message}`, flags: MessageFlags.Ephemeral });
       }
     }
   }
@@ -783,11 +783,11 @@ client.on("interactionCreate", async (interaction) => {
     const member = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
 
     if (!member) {
-      return interaction.reply({ content: "User not found in this server.", ephemeral: true });
+      return interaction.reply({ content: "User not found in this server.", flags: MessageFlags.Ephemeral });
     }
 
     if (!member.kickable) {
-      return interaction.reply({ content: "I cannot kick this user. They might have a higher role than me, or I lack permissions.", ephemeral: true });
+      return interaction.reply({ content: "I cannot kick this user. They might have a higher role than me, or I lack permissions.", flags: MessageFlags.Ephemeral });
     }
 
     await member.kick(reason);
@@ -800,7 +800,7 @@ client.on("interactionCreate", async (interaction) => {
     const member = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
 
     if (member && !member.bannable) {
-      return interaction.reply({ content: "I cannot ban this user. They might have a higher role than me, or I lack permissions.", ephemeral: true });
+      return interaction.reply({ content: "I cannot ban this user. They might have a higher role than me, or I lack permissions.", flags: MessageFlags.Ephemeral });
     }
 
     await interaction.guild.members.ban(targetUser.id, { reason });
@@ -814,11 +814,11 @@ client.on("interactionCreate", async (interaction) => {
     const member = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
 
     if (!member) {
-      return interaction.reply({ content: "User not found in this server.", ephemeral: true });
+      return interaction.reply({ content: "User not found in this server.", flags: MessageFlags.Ephemeral });
     }
 
     if (!member.moderatable) {
-      return interaction.reply({ content: "I cannot timeout this user. They might have a higher role than me, or I lack permissions.", ephemeral: true });
+      return interaction.reply({ content: "I cannot timeout this user. They might have a higher role than me, or I lack permissions.", flags: MessageFlags.Ephemeral });
     }
 
     const durationMs = duration * 60 * 1000;
@@ -834,7 +834,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.guild.members.unban(targetId, reason);
       await interaction.reply({ content: `🕊️ Successfully unbanned user ID ${targetId}. Reason: ${reason}` });
     } catch (err) {
-      await interaction.reply({ content: "Failed to unban. Make sure the ID is correct and the user is actually banned.", ephemeral: true });
+      await interaction.reply({ content: "Failed to unban. Make sure the ID is correct and the user is actually banned.", flags: MessageFlags.Ephemeral });
     }
   }
 
@@ -843,9 +843,9 @@ client.on("interactionCreate", async (interaction) => {
 
     try {
       const deleted = await interaction.channel.bulkDelete(amount, true);
-      await interaction.reply({ content: `🧹 Successfully deleted ${deleted.size} messages.`, ephemeral: true });
+      await interaction.reply({ content: `🧹 Successfully deleted ${deleted.size} messages.`, flags: MessageFlags.Ephemeral });
     } catch (err) {
-      await interaction.reply({ content: "Failed to delete messages. Note that you can only bulk delete messages that are under 14 days old.", ephemeral: true });
+      await interaction.reply({ content: "Failed to delete messages. Note that you can only bulk delete messages that are under 14 days old.", flags: MessageFlags.Ephemeral });
     }
   }
 });
