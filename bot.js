@@ -610,7 +610,13 @@ client.on("messageCreate", async (message) => {
       } catch (err) {
         logger.error("Failed to react with emoji:", emoji);
       }
-      return;
+      // Remove the REACT tag and continue processing the rest of the text
+      finalReply = finalReply.replace(/\[REACT:\s*.+?\]/gi, "").trim();
+      
+      // If there's no message text left after reacting, stop here
+      if (!finalReply) {
+        return;
+      }
     }
 
     let shouldEmbed = false;
