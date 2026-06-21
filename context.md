@@ -30,7 +30,7 @@ All tunable settings live in `config.json` for quick changes without touching co
 - `voice_name` — Gemini Live voice persona (e.g., "Aoede", "Charon", "Fenrir", "Kore", "Puck").
 - `models.default` / `models.thinking` / `models.search` / `models.live` — Model lists for each task category.
 
-Both `bot.js` and `voice.js` read from this file at startup (with hardcoded fallback defaults if the file is missing).
+Both `bot.js` and `voice.js` read from this file dynamically on each execution (e.g., inside message and interaction handlers), allowing settings to be hot-reloaded without restarting the bot.
 
 ### 2. Intelligent Model Routing & Fallback System
 To optimize API usage and provide the best answers (especially on free tiers), the bot features a dynamic model router.
@@ -51,7 +51,7 @@ The bot behaves like a true participant in the server rather than just a command
 - **Contextual Awareness**: Every user message in the server is silently added to the conversation history (prefixed with the user's display name **and Discord User ID**). This means the AI always knows the ongoing context and exactly who is speaking, allowing it to remember specific users (e.g. for creating admin whitelists).
 - **Probability Gate**: To save API quota while still acting autonomously, the bot will randomly "wake up" to process normal, unmentioned chat messages (configurable via `random_appear_rate` in `config.json`). It will *always* process messages if directly `@mentioned` or replied to.
 - **Dynamic Reactions**: When processing a message, the AI is instructed in its system prompt that it has full autonomy to:
-  - Output `[REACT: emoji]` to simply react to the message with a chosen emoji.
+  - Output `[REACT: emoji]` to react to the message with a chosen emoji. It can do this *alone* to just react, or alongside a text response to react and reply simultaneously!
   - Output `[IGNORE]` to purposely stay silent and ignore the message.
   - Output normal text or an `[EMBED]` to join the conversation.
 
@@ -91,11 +91,18 @@ The bot can join a voice channel and have real-time voice conversations using Ge
 - **Intentional disconnect**: The `/leave` command sets an `_intentionalClose` flag on the WebSocket itself (not the session map) to prevent the close handler from triggering reconnection after the session has been cleaned up.
 - **Configurable**: Silence duration and voice name are configurable via `config.json`.
 
-### 9. Moderation & Utility Commands
-The bot provides a suite of slash commands for server management (requires appropriate Discord permissions):
+### 9. Admin, Moderation & Utility Commands
+The bot provides a suite of slash commands for server management.
+
+**Admin Commands (Requires User ID to be in `ADMINS` inside `.env`)**:
+- `/reset_memory` — Completely wipes the AI's saved memories for the server.
+- `/pause_ai` — Toggles pausing/unpausing the AI from generating text responses globally.
+- `/config [setting] [value]` — Updates `config.json` settings directly from Discord (e.g., `random_appear_rate`, `silence_duration_ms`). Settings take effect immediately.
+
+**Utility & Moderation Commands (Requires appropriate Discord permissions)**:
 - `/ping` — Checks bot latency.
-- `/clear` — Clears the bot's conversation memory for the current channel.
-- `/memories` — View the bot's saved memories for this server (ephemeral).
+- `/clear` — Clears the bot's temporary conversation history for the current channel.
+- `/memories` — View the bot's persistent saved memories for this server (ephemeral).
 - `/join` — Join voice channel and start Gemini Live.
 - `/leave` — Leave the voice channel.
 - `/kick [user] [reason]` — Kicks a member.
@@ -120,4 +127,4 @@ The bot provides a suite of slash commands for server management (requires appro
 - The bot automatically chunks its responses (whether plain text or embeds) to adhere to Discord's API limits.
 - When expanding the JSON embed schema parsing, ensure `finalReply.match(/\{[\s\S]*\}/)` and the `EmbedBuilder` setters remain heavily sanitized and wrapped in `try/catch` to prevent bot crashes from malformed AI output.
 - Memory tags are processed *after* the response is generated but *before* it's sent to Discord. The stripping regex must stay in sync with the parsing regex.
-- The `config.json` is loaded once at startup for `bot.js` constants, and on each call for `voice.js`. If you want hot-reload for bot.js settings, you'd need to call `loadConfig()` per-message instead.
+- The Voice Live protocol implements proper `clientContent` interruption (barge-in) and turn-completion signaling based on silence detection, eliminating unresponsive delays.
