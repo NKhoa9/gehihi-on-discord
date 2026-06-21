@@ -1,5 +1,0 @@
-add a config.json for quick settings
-eg: max_history, random appear rate, model to use/ model lists, etc...
-
-fix voice delay
-fix error "⚠️ Connection dropped and all fallback voice models are exhausted." appear after disconnected voice using /leave

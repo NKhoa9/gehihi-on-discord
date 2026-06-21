@@ -1,0 +1,23 @@
+{
+  "max_history": 30,
+  "random_appear_rate": 0.2,
+  "silence_duration_ms": 200,
+  "voice_name": "Aoede",
+  "models": {
+    "default": [
+      "gemini-3.1-flash-lite",
+      "gemini-2.5-flash-lite",
+      "gemma-4-31b"
+    ],
+    "thinking": [
+      "gemini-3.5-flash",
+      "gemini-2.5-flash"
+    ],
+    "search": [
+      "gemini-2.5-flash"
+    ],
+    "live": [
+      "models/gemini-3.1-flash-live-preview"
+    ]
+  }
+}
