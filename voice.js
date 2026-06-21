@@ -13,16 +13,26 @@ import WebSocket from 'ws';
 import prism from 'prism-media';
 import ffmpegStatic from 'ffmpeg-static';
 import { PassThrough } from 'stream';
+import fs from 'fs';
+
+function loadConfig() {
+  try {
+    return JSON.parse(fs.readFileSync("config.json", "utf-8"));
+  } catch {
+    return {};
+  }
+}
 
 const GEMINI_LIVE_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${process.env.GEMINI_API_KEY}`;
 
 export const voiceSessions = new Map();
 
-const MODELS_LIVE = [
-  'models/gemini-3.1-flash-live-preview'
-];
-
 export async function joinAndStartLive(interaction, logger, modelIndex = 0, isReconnect = false) {
+  const config = loadConfig();
+  const MODELS_LIVE = config.models?.live || ['models/gemini-3.1-flash-live-preview'];
+  const SILENCE_DURATION = config.silence_duration_ms ?? 300;
+  const VOICE_NAME = config.voice_name || "Aoede";
+
   const member = interaction.member;
   const voiceChannel = member.voice.channel;
 
@@ -65,6 +75,10 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
   const audioPlayer = createAudioPlayer();
   connection.subscribe(audioPlayer);
 
+  // Track intentional close locally on the WebSocket itself so the close handler
+  // can read it even after the session map entry is deleted by /leave.
+  ws._intentionalClose = false;
+
   let currentAudioStream = null;
 
   ws.on('open', () => {
@@ -79,7 +93,7 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
           speechConfig: {
             voiceConfig: {
               prebuiltVoiceConfig: {
-                voiceName: "Aoede", // Aoede, Charon, Fenrir, Kore, Puck
+                voiceName: VOICE_NAME,
               }
             }
           }
@@ -147,10 +161,11 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
   ws.on('close', (code, reason) => {
     logger.log(`Gemini Live WebSocket closed. Code: ${code}, Reason: ${reason}`);
 
-    const session = voiceSessions.get(interaction.guildId);
-    const isIntentional = session?.intentionalClose;
+    // Read the flag from the WebSocket itself — this survives even if /leave
+    // already deleted the session from the map.
+    const isIntentional = ws._intentionalClose;
 
-    // ✅ THE FIX: Only destroy if it hasn't been destroyed by /leave already
+    // Only destroy if it hasn't been destroyed by /leave already
     if (connection && connection.state.status !== VoiceConnectionStatus.Destroyed) {
       try {
         connection.destroy();
@@ -178,11 +193,11 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
   // Listen to the user speaking
   const receiver = connection.receiver;
 
-  // ✅ ADD THIS: A lock to prevent multiple streams for the same user
+  // A lock to prevent multiple streams for the same user
   const activeSpeakers = new Set();
 
   receiver.speaking.on('start', (userId) => {
-    // ✅ ADD THIS: If we are already recording them, ignore the event
+    // If we are already recording them, ignore the event
     if (activeSpeakers.has(userId)) return;
     activeSpeakers.add(userId);
 
@@ -196,7 +211,7 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
     const audioStream = receiver.subscribe(userId, {
       end: {
         behavior: EndBehaviorType.Silence,
-        duration: 500,
+        duration: SILENCE_DURATION,
       }
     });
 
@@ -221,7 +236,7 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
 
     audioStream.on('error', err => logger.error('Audio stream error:', err));
 
-    // ✅ UPDATE THIS: Destroy the pipelines AND remove the lock when silence hits
+    // Destroy the pipelines AND remove the lock when silence hits
     audioStream.on('end', () => {
       opusDecoder.destroy();
       pcmResampler.destroy();
@@ -244,6 +259,9 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
     });
   });
 
+  // Store session with the WebSocket reference
+  voiceSessions.set(interaction.guildId, { ws, connection });
+
   if (!isReconnect) {
     await interaction.followUp(`🎙️ Joined voice channel! Start speaking and Gemini will reply with voice.`);
   }
@@ -262,9 +280,12 @@ export async function leaveLive(interaction) {
 
   // Clean up our local WebSocket and memory if it exists
   if (session) {
-    session.intentionalClose = true;
-    if (session.ws && session.ws.readyState === WebSocket.OPEN) {
-      session.ws.close();
+    // Mark intentional close on the WebSocket itself so the close handler knows
+    if (session.ws) {
+      session.ws._intentionalClose = true;
+      if (session.ws.readyState === WebSocket.OPEN) {
+        session.ws.close();
+      }
     }
     voiceSessions.delete(interaction.guildId);
   }

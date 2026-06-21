@@ -28,14 +28,20 @@ const logger = {
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
+function loadConfig() {
+  try {
+    return JSON.parse(fs.readFileSync("config.json", "utf-8"));
+  } catch (err) {
+    logger.warn("Failed to load config.json, using defaults:", err.message);
+    return {};
+  }
+}
+
+const config = loadConfig();
+
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-const MODELS_DEFAULT = ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemma-4-31b"];
-const MODELS_THINKING = ["gemini-3.5-flash", "gemini-2.5-flash"];
-const MODELS_SEARCH = ["gemini-2.5-flash"];
-
-const MAX_HISTORY = parseInt(process.env.MAX_HISTORY || "30", 10);
 // Max retry attempts when hitting the RPM rate limit (429) per model
 const MAX_RETRIES = 2;
 
@@ -48,28 +54,106 @@ const genai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const SYSTEM_PROMPT = `You are a chill, friendly bot hanging out in a Discord server. \
-Your name is Gemini, using Gemini API by Google, while the bot creation is done by Lukas. \
-You talk casually — like a witty friend in a group chat. Keep responses concise \
-(1-3 sentences usually, unless someone asks for something detailed). \
-Throw in emojis occasionally but don't overdo it. \
-You can be playful, sarcastic (lightly), and humorous. \
-Never be mean-spirited. If someone asks you something you don't know, just say so honestly. \
-You speak naturally — no robotic "As an AI language model…" stuff. \
-Respond in whatever language the user writes in. \
-Use Discord markdown formatting (bold, italic, code blocks, etc.) when it makes sense. \
-No Latex. \
-Note: Each message from a user will start with their display name, like 'Username: Message content'. Use this to distinguish who you are talking to. \
-IMPORTANT: You have the ability to send messages as rich Discord Embeds. \
-You can use embed whenever you see fit. \
-If your response is long, complex, or contains code blocks/lists, you SHOULD use an embed. \
-To use an embed, start your response exactly with the tag [EMBED]. \
-If you want a FULLY CUSTOM embed (with titles, fields, custom colors), output the tag [EMBED] followed immediately by a JSON object containing "title", "description", "color" (as integer), "fields" (array of name/value/inline), and "footer" (object with text). \
-Otherwise, just write normal text after [EMBED] and it will be wrapped automatically. \
-\
-NEW ABILITY: You can now choose to just REACT to a message with an emoji! \
-If someone says something where a simple reaction is better than a text reply, output EXACTLY the tag [REACT: 🍎] (replace the apple with your chosen emoji). Do not output anything else. \
-If you think the message doesn't need any reply or reaction, output EXACTLY [IGNORE].`;
+// ── Memory System ───────────────────────────────────────────────────────────
+
+const MEMORIES_FILE = "memories.json";
+
+function loadMemories() {
+  try {
+    if (fs.existsSync(MEMORIES_FILE)) {
+      return JSON.parse(fs.readFileSync(MEMORIES_FILE, "utf-8"));
+    }
+  } catch (err) {
+    logger.warn("Failed to load memories.json:", err.message);
+  }
+  return {};
+}
+
+function saveMemories(memories) {
+  try {
+    fs.writeFileSync(MEMORIES_FILE, JSON.stringify(memories, null, 2), "utf-8");
+  } catch (err) {
+    logger.error("Failed to save memories.json:", err.message);
+  }
+}
+
+function getGuildMemories(guildId) {
+  const all = loadMemories();
+  return all[guildId] || [];
+}
+
+function setGuildMemories(guildId, memories) {
+  const all = loadMemories();
+  all[guildId] = memories;
+  saveMemories(all);
+}
+
+/**
+ * Process [MEMORY] tags from the AI's response and apply them.
+ * Returns the response with all [MEMORY] tags stripped out.
+ */
+function processMemoryTags(replyText, guildId) {
+  const memoryTagRegex = /\[MEMORY:(ADD|EDIT|DELETE)\s*(?:#(\d+)\s*)?(.+?)\]/gi;
+  let match;
+  const operations = [];
+
+  while ((match = memoryTagRegex.exec(replyText)) !== null) {
+    operations.push({
+      action: match[1].toUpperCase(),
+      index: match[2] ? parseInt(match[2], 10) : null,
+      content: match[3].trim(),
+    });
+  }
+
+  if (operations.length > 0) {
+    const memories = getGuildMemories(guildId);
+
+    for (const op of operations) {
+      if (op.action === "ADD") {
+        memories.push({ text: op.content, createdAt: new Date().toISOString() });
+        logger.log(`[Memory] ADD in guild ${guildId}: "${op.content}"`);
+      } else if (op.action === "EDIT" && op.index !== null) {
+        const idx = op.index - 1; // 1-indexed for the AI
+        if (idx >= 0 && idx < memories.length) {
+          logger.log(`[Memory] EDIT #${op.index} in guild ${guildId}: "${memories[idx].text}" -> "${op.content}"`);
+          memories[idx].text = op.content;
+          memories[idx].updatedAt = new Date().toISOString();
+        }
+      } else if (op.action === "DELETE" && op.index !== null) {
+        const idx = op.index - 1;
+        if (idx >= 0 && idx < memories.length) {
+          logger.log(`[Memory] DELETE #${op.index} in guild ${guildId}: "${memories[idx].text}"`);
+          memories.splice(idx, 1);
+        }
+      }
+    }
+
+    setGuildMemories(guildId, memories);
+  }
+
+  // Strip all [MEMORY:...] tags from the visible reply
+  return replyText.replace(/\[MEMORY:(?:ADD|EDIT|DELETE)\s*(?:#\d+\s*)?.+?\]/gi, "").trim();
+}
+
+function buildMemoryBlock(guildId) {
+  const memories = getGuildMemories(guildId);
+  if (memories.length === 0) return "";
+  const lines = memories.map((m, i) => `#${i + 1}: ${m.text}`).join("\n");
+  return `\n\n--- YOUR MEMORIES FOR THIS SERVER ---\n${lines}\n--- END MEMORIES ---`;
+}
+
+// ── System Prompt ───────────────────────────────────────────────────────────
+
+function loadSystemPrompt() {
+  try {
+    return fs.readFileSync("system_prompt.txt", "utf-8");
+  } catch (err) {
+    logger.warn("Failed to load system_prompt.txt:", err.message);
+    return "You are a friendly AI assistant."; // Extremely basic fallback
+  }
+}
+
+const BASE_SYSTEM_PROMPT = loadSystemPrompt();
 
 // ── Supported MIME types for Gemini vision ──────────────────────────────────
 
@@ -124,8 +208,12 @@ function getHistory(channelId) {
 function pushHistory(channelId, role, text) {
   const history = getHistory(channelId);
   history.push({ role, text });
-  // Trim to max
-  while (history.length > MAX_HISTORY) {
+  
+  // Trim to max (live-read config)
+  const cfg = loadConfig();
+  const maxHistory = cfg.max_history || parseInt(process.env.MAX_HISTORY || "30", 10);
+  
+  while (history.length > maxHistory) {
     history.shift();
   }
 }
@@ -181,7 +269,10 @@ async function classifyPrompt(text) {
 Reply with ONLY the number (1, 2, or 3).
 User message: "${text}"`;
 
-  for (const model of MODELS_DEFAULT) {
+  const cfg = loadConfig();
+  const modelsDefault = cfg.models?.default || ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemma-4-31b"];
+
+  for (const model of modelsDefault) {
     try {
       const response = await genai.models.generateContent({
         model: model,
@@ -199,7 +290,7 @@ User message: "${text}"`;
   return "NORMAL"; // Fallback to normal on classification error across all default models
 }
 
-async function generateReply(channelId, userText, imageParts = []) {
+async function generateReply(channelId, userText, imageParts = [], guildId = null) {
   // User messages are now pushed to history in messageCreate before calling this
 
   const history = getHistory(channelId);
@@ -216,20 +307,29 @@ async function generateReply(channelId, userText, imageParts = []) {
     lastMsg.parts.push(...imageParts);
   }
 
+  // Build system prompt with memories injected
+  const memoryBlock = guildId ? buildMemoryBlock(guildId) : "";
+  const SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + memoryBlock;
+
   // 1. Determine task type
   let taskType = "NORMAL";
   if (userText.length > 10) {
     taskType = await classifyPrompt(userText);
   }
 
-  let modelList = MODELS_DEFAULT;
+  const cfg = loadConfig();
+  const modelsDefault = cfg.models?.default || ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemma-4-31b"];
+  const modelsSearch = cfg.models?.search || ["gemini-2.5-flash"];
+  const modelsThinking = cfg.models?.thinking || ["gemini-3.5-flash", "gemini-2.5-flash"];
+
+  let modelList = modelsDefault;
   let useSearch = false;
 
   if (taskType === "SEARCH") {
-    modelList = MODELS_SEARCH;
+    modelList = modelsSearch;
     useSearch = true;
   } else if (taskType === "THINKING") {
-    modelList = MODELS_THINKING;
+    modelList = modelsThinking;
   }
 
   let reportedIssue = "";
@@ -283,7 +383,7 @@ async function generateReply(channelId, userText, imageParts = []) {
   // Let's fallback to the DEFAULT list if we weren't already using it.
   if (taskType !== "NORMAL") {
     reportedIssue += `⚠️ *(Auto-Fallback: All \`${taskType}\` models failed. Falling back to \`NORMAL\` models...)*\n\n`;
-    for (const model of MODELS_DEFAULT) {
+    for (const model of modelsDefault) {
       try {
         const response = await genai.models.generateContent({
           model: model,
@@ -338,6 +438,29 @@ const commands = [
   new SlashCommandBuilder()
     .setName("ping")
     .setDescription("Check if the bot is alive"),
+  new SlashCommandBuilder()
+    .setName("memories")
+    .setDescription("View the bot's saved memories for this server"),
+  new SlashCommandBuilder()
+    .setName("reset_memory")
+    .setDescription("[Admin] Completely erase the AI's saved memories for this server"),
+  new SlashCommandBuilder()
+    .setName("pause_ai")
+    .setDescription("[Admin] Pause or unpause the AI from responding in text channels"),
+  new SlashCommandBuilder()
+    .setName("config")
+    .setDescription("[Admin] Change bot configuration settings")
+    .addStringOption(option => 
+      option.setName('setting')
+        .setDescription('The setting to change')
+        .setRequired(true)
+        .addChoices(
+          { name: 'max_history', value: 'max_history' },
+          { name: 'random_appear_rate', value: 'random_appear_rate' },
+          { name: 'silence_duration_ms', value: 'silence_duration_ms' },
+          { name: 'voice_name', value: 'voice_name' }
+        ))
+    .addStringOption(option => option.setName('value').setDescription('The new value').setRequired(true)),
   new SlashCommandBuilder()
     .setName("kick")
     .setDescription("Kick a user from the server")
@@ -415,16 +538,19 @@ client.once("ready", async () => {
   await registerCommands();
 });
 
+let isAIPaused = false;
+
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
   const userText = cleanContent(message);
   const userName = message.author.displayName || message.author.username;
-
-  logger.log(`[Message] ${userName} (${message.author.id}) in ${message.channel.id}: ${userText.substring(0, 100)}`);
+  const userId = message.author.id;
 
   // ALWAYS add every message to history so the bot can follow the conversation
-  pushHistory(message.channel.id, "user", `${userName}: ${userText}`);
+  pushHistory(message.channel.id, "user", `${userName} (ID: ${userId}): ${userText}`);
+
+  if (isAIPaused) return;
 
   // Decide if we should process this message
   let isMentioned = message.mentions.has(client.user);
@@ -439,8 +565,10 @@ client.on("messageCreate", async (message) => {
     } catch { }
   }
 
-  // Process if mentioned, replied to, or a 5% chance for spontaneous interaction
-  const shouldProcess = isMentioned || isReplyToBot || Math.random() < 0.35;
+  // Process if mentioned, replied to, or random chance for spontaneous interaction
+  const cfg = loadConfig();
+  const randomRate = cfg.random_appear_rate ?? 0.05;
+  const shouldProcess = isMentioned || isReplyToBot || Math.random() < randomRate;
 
   if (!shouldProcess) {
     return;
@@ -457,10 +585,17 @@ client.on("messageCreate", async (message) => {
     const reply = await generateReply(
       message.channel.id,
       userText,
-      imageParts
+      imageParts,
+      message.guildId
     );
 
+    // Process any memory operations from the AI's response (silently)
     let finalReply = reply.trim();
+    if (message.guildId) {
+      finalReply = processMemoryTags(finalReply, message.guildId);
+    }
+
+    logger.log(`[Response] to ${userName} in ${message.channel.id}: ${finalReply.substring(0, 200)}`);
 
     // Check for IGNORE or REACT
     if (finalReply.includes("[IGNORE]")) {
@@ -574,6 +709,73 @@ client.on("interactionCreate", async (interaction) => {
       ephemeral: true,
     });
   }
+
+  if (interaction.commandName === "memories") {
+    const memories = getGuildMemories(interaction.guildId);
+    if (memories.length === 0) {
+      await interaction.reply({ content: "🧠 No memories saved for this server yet!", ephemeral: true });
+    } else {
+      const lines = memories.map((m, i) => `**#${i + 1}**: ${m.text}`).join("\n");
+      const embed = new EmbedBuilder()
+        .setColor(0x9B59B6)
+        .setTitle("🧠 Bot Memories")
+        .setDescription(lines.substring(0, 4096))
+        .setFooter({ text: `${memories.length} memory(s) saved` });
+      await interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+  }
+
+  // ── Admin Commands ────────────────────────────────────────────────────────
+
+  const adminCommands = ["reset_memory", "pause_ai", "config"];
+  if (adminCommands.includes(interaction.commandName)) {
+    const adminEnv = process.env.ADMINS || "";
+    const admins = adminEnv.split(",").map(id => id.trim()).filter(id => id);
+    
+    if (admins.length === 0) {
+      return interaction.reply({ content: "❌ No admins are configured! Please add your User ID to the `ADMINS` variable in `.env` (comma separated).", ephemeral: true });
+    }
+    
+    if (!admins.includes(interaction.user.id)) {
+      return interaction.reply({ content: "❌ You are not on the bot's admin whitelist.", ephemeral: true });
+    }
+
+    if (interaction.commandName === "reset_memory") {
+      setGuildMemories(interaction.guildId, []);
+      return interaction.reply({ content: "🧠 All AI memories for this server have been completely wiped by an admin.", ephemeral: false });
+    }
+
+    if (interaction.commandName === "pause_ai") {
+      isAIPaused = !isAIPaused;
+      return interaction.reply({ content: isAIPaused ? "⏸️ AI has been PAUSED globally. It will no longer reply to messages." : "▶️ AI has been UNPAUSED. It will now process messages again.", ephemeral: false });
+    }
+
+    if (interaction.commandName === "config") {
+      const setting = interaction.options.getString('setting');
+      const valueStr = interaction.options.getString('value');
+      let newValue = valueStr;
+
+      // Parse types properly
+      if (setting === "max_history" || setting === "silence_duration_ms") {
+        newValue = parseInt(valueStr, 10);
+        if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid integer.", ephemeral: true });
+      } else if (setting === "random_appear_rate") {
+        newValue = parseFloat(valueStr);
+        if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid number (e.g. 0.1).", ephemeral: true });
+      }
+
+      const currentConfig = loadConfig();
+      currentConfig[setting] = newValue;
+      try {
+        fs.writeFileSync("config.json", JSON.stringify(currentConfig, null, 2), "utf-8");
+        return interaction.reply({ content: `✅ Config updated: \`${setting}\` is now \`${newValue}\`. Note: This setting has immediately taken effect!`, ephemeral: true });
+      } catch (err) {
+        return interaction.reply({ content: `❌ Failed to save config: ${err.message}`, ephemeral: true });
+      }
+    }
+  }
+
+  // ── Moderation Commands ───────────────────────────────────────────────────
 
   if (interaction.commandName === "kick") {
     const targetUser = interaction.options.getUser('target');
