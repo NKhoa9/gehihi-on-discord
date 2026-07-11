@@ -1,8 +1,20 @@
 import "dotenv/config";
-import { Client, GatewayIntentBits, ActivityType, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, MessageFlags } from "discord.js";
+import { Client, GatewayIntentBits, ActivityType, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, MessageFlags, AttachmentBuilder } from "discord.js";
 import { GoogleGenAI } from "@google/genai";
 import fs from "fs";
+import path from "path";
 import { joinAndStartLive, leaveLive } from "./voice.js";
+
+// ── Lib Directory Setup ─────────────────────────────────────────────────────
+
+const LIB_IMG = path.resolve("lib/img");
+const LIB_GEN_IMG = path.resolve("lib/gen_img");
+const LIB_GEN_VID = path.resolve("lib/gen_vid");
+const LIB_CACHE = path.resolve("lib/cache");
+fs.mkdirSync(LIB_IMG, { recursive: true });
+fs.mkdirSync(LIB_GEN_IMG, { recursive: true });
+fs.mkdirSync(LIB_GEN_VID, { recursive: true });
+fs.mkdirSync(LIB_CACHE, { recursive: true });
 
 // ── Logger Setup ────────────────────────────────────────────────────────────
 
@@ -93,14 +105,14 @@ function setGuildMemories(guildId, memories) {
  * Returns the response with all [MEMORY] tags stripped out.
  */
 function processMemoryTags(replyText, guildId) {
-  const memoryTagRegex = /\[MEMORY:(ADD|EDIT|DELETE)\s*(?:#(\d+)\s*)?(.+?)\]/gi;
+  const memoryTagRegex = /\[MEMORY:(ADD|EDIT|DELETE)\s*(?:#?([a-z0-9]+)\s*)?(.+?)\]/gi;
   let match;
   const operations = [];
 
   while ((match = memoryTagRegex.exec(replyText)) !== null) {
     operations.push({
       action: match[1].toUpperCase(),
-      index: match[2] ? parseInt(match[2], 10) : null,
+      id: match[2] ? match[2].toLowerCase() : null,
       content: match[3].trim(),
     });
   }
@@ -110,20 +122,25 @@ function processMemoryTags(replyText, guildId) {
 
     for (const op of operations) {
       if (op.action === "ADD") {
-        memories.push({ text: op.content, createdAt: new Date().toISOString() });
-        logger.log(`[Memory] ADD in guild ${guildId}: "${op.content}"`);
-      } else if (op.action === "EDIT" && op.index !== null) {
-        const idx = op.index - 1; // 1-indexed for the AI
-        if (idx >= 0 && idx < memories.length) {
-          logger.log(`[Memory] EDIT #${op.index} in guild ${guildId}: "${memories[idx].text}" -> "${op.content}"`);
+        const newId = Math.random().toString(36).substring(2, 8);
+        memories.push({ id: newId, text: op.content, createdAt: new Date().toISOString() });
+        logger.log(`[Memory] ADD in guild ${guildId}: [${newId}] "${op.content}"`);
+      } else if (op.action === "EDIT" && op.id) {
+        const idx = memories.findIndex(m => m.id === op.id);
+        if (idx !== -1) {
+          logger.log(`[Memory] EDIT [${op.id}] in guild ${guildId}: "${memories[idx].text}" -> "${op.content}"`);
           memories[idx].text = op.content;
           memories[idx].updatedAt = new Date().toISOString();
+        } else {
+          logger.warn(`[Memory] EDIT failed: ID ${op.id} not found in guild ${guildId}`);
         }
-      } else if (op.action === "DELETE" && op.index !== null) {
-        const idx = op.index - 1;
-        if (idx >= 0 && idx < memories.length) {
-          logger.log(`[Memory] DELETE #${op.index} in guild ${guildId}: "${memories[idx].text}"`);
+      } else if (op.action === "DELETE" && op.id) {
+        const idx = memories.findIndex(m => m.id === op.id);
+        if (idx !== -1) {
+          logger.log(`[Memory] DELETE [${op.id}] in guild ${guildId}: "${memories[idx].text}"`);
           memories.splice(idx, 1);
+        } else {
+          logger.warn(`[Memory] DELETE failed: ID ${op.id} not found in guild ${guildId}`);
         }
       }
     }
@@ -132,13 +149,13 @@ function processMemoryTags(replyText, guildId) {
   }
 
   // Strip all [MEMORY:...] tags from the visible reply
-  return replyText.replace(/\[MEMORY:(?:ADD|EDIT|DELETE)\s*(?:#\d+\s*)?.+?\]/gi, "").trim();
+  return replyText.replace(/\[MEMORY:(?:ADD|EDIT|DELETE)\s*(?:#?[a-z0-9]+\s*)?.+?\]/gi, "").trim();
 }
 
 function buildMemoryBlock(guildId) {
   const memories = getGuildMemories(guildId);
   if (memories.length === 0) return "";
-  const lines = memories.map((m, i) => `#${i + 1}: ${m.text}`).join("\n");
+  const lines = memories.map(m => `[ID: ${m.id || 'N/A'}] ${m.text}`).join("\n");
   return `\n\n--- YOUR MEMORIES FOR THIS SERVER ---\n${lines}\n--- END MEMORIES ---`;
 }
 
@@ -195,7 +212,7 @@ function isSupportedAttachment(contentType) {
 // ── Conversation History (per-channel) ──────────────────────────────────────
 // We only store text in history to avoid memory bloat from image buffers.
 
-/** @type {Map<string, Array<{role: string, text: string}>>} */
+/** @type {Map<string, Array<{role: string, text: string, attachments: Array<{filepath: string, mimeType: string}>}>>} */
 const channelHistory = new Map();
 
 function getHistory(channelId) {
@@ -205,24 +222,49 @@ function getHistory(channelId) {
   return channelHistory.get(channelId);
 }
 
-function pushHistory(channelId, role, text) {
+function pushHistory(channelId, role, text, attachments = []) {
   const history = getHistory(channelId);
-  history.push({ role, text });
+  history.push({ role, text, attachments });
   
   // Trim to max (live-read config)
   const cfg = loadConfig();
   const maxHistory = cfg.max_history || parseInt(process.env.MAX_HISTORY || "30", 10);
   
   while (history.length > maxHistory) {
-    history.shift();
+    const shifted = history.shift();
+    // Garbage collection for cached attachments falling out of history
+    if (shifted && shifted.attachments && shifted.attachments.length > 0) {
+      for (const att of shifted.attachments) {
+        try {
+          if (fs.existsSync(att.filepath)) {
+            fs.unlinkSync(att.filepath);
+            logger.log(`[Cache] Garbage collected old attachment: ${path.basename(att.filepath)}`);
+          }
+        } catch (err) {
+          logger.warn(`[Cache] Failed to delete ${att.filepath}:`, err.message);
+        }
+      }
+    }
   }
 }
 
 function clearHistory(channelId) {
+  const history = channelHistory.get(channelId);
+  if (history) {
+    for (const entry of history) {
+      if (entry.attachments) {
+        for (const att of entry.attachments) {
+          try {
+            if (fs.existsSync(att.filepath)) fs.unlinkSync(att.filepath);
+          } catch (e) {}
+        }
+      }
+    }
+  }
   channelHistory.delete(channelId);
 }
 
-// ── Attachment Downloading ──────────────────────────────────────────────────
+// ── Attachment Caching ──────────────────────────────────────────────────────
 
 async function downloadAttachment(url) {
   const res = await fetch(url);
@@ -232,34 +274,188 @@ async function downloadAttachment(url) {
 }
 
 /**
- * Download Discord attachments and convert them to Gemini inline data parts.
+ * Download Discord attachments, cache them to disk, and return their metadata.
  * @param {import("discord.js").Collection} attachments
- * @returns {Promise<Array<{inlineData: {data: string, mimeType: string}}>>}
+ * @returns {Promise<Array<{filepath: string, mimeType: string}>>}
  */
-async function attachmentsToParts(attachments) {
-  const parts = [];
+async function cacheAttachments(attachments) {
+  const cachedFiles = [];
 
   for (const att of attachments.values()) {
     if (!isSupportedAttachment(att.contentType)) continue;
 
     try {
       const buffer = await downloadAttachment(att.url);
-      const mimeType = att.contentType.split(";")[0].trim();
-      parts.push({
-        inlineData: {
-          data: buffer.toString("base64"),
-          mimeType,
-        },
-      });
+      const mimeType = att.contentType.split(";")[0].trim().toLowerCase();
+      const ext = "." + (att.name.split('.').pop() || "bin");
+      const filename = `cache_${Date.now()}_${Math.random().toString(36).substring(2,8)}${ext}`;
+      const filepath = path.join(LIB_CACHE, filename);
+      
+      fs.writeFileSync(filepath, buffer);
+      cachedFiles.push({ filepath, mimeType });
     } catch (err) {
-      logger.error(`Failed to download attachment ${att.name}:`, err.message);
+      logger.error(`Failed to cache attachment ${att.name}:`, err.message);
     }
   }
 
-  return parts;
+  return cachedFiles;
 }
 
-// ── Gemini API Call ─────────────────────────────────────────────────────────
+// ── Image Helpers ───────────────────────────────────────────────────────────
+
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".heif"]);
+
+function getSavedImagesList() {
+  try {
+    return fs.readdirSync(LIB_IMG).filter(f => {
+      const ext = path.extname(f).toLowerCase();
+      return IMAGE_EXTENSIONS.has(ext);
+    });
+  } catch (err) {
+    logger.error("Failed to read img directory:", err.message);
+    return [];
+  }
+}
+
+function getSavedImage(name) {
+  const files = getSavedImagesList();
+  const match = files.find(f => f.toLowerCase().startsWith(name.toLowerCase()));
+  if (match) return path.join(LIB_IMG, match);
+  return null;
+}
+
+async function downloadImageToLib(url, customName = null) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to download image: ${res.status}`);
+  const contentType = res.headers.get("content-type") || "";
+  const mime = contentType.split(";")[0].trim().toLowerCase();
+  
+  const extMap = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/heic": ".heic",
+    "image/heif": ".heif",
+  };
+  const ext = extMap[mime] || ".png";
+  const nameBase = customName ? customName.replace(/[^a-z0-9_-]/gi, "_") : `img_${Date.now()}`;
+  const filename = `${nameBase}${ext}`;
+  const filepath = path.join(LIB_IMG, filename);
+
+  const buffer = Buffer.from(await res.arrayBuffer());
+  fs.writeFileSync(filepath, buffer);
+  
+  // Save to info tracking file
+  try {
+    const infoFile = path.join(LIB_IMG, "img_info.json");
+    let infoData = {};
+    if (fs.existsSync(infoFile)) {
+      infoData = JSON.parse(fs.readFileSync(infoFile, "utf8"));
+    }
+    infoData[filename] = {
+      sourceUrl: url,
+      downloadedAt: new Date().toISOString()
+    };
+    fs.writeFileSync(infoFile, JSON.stringify(infoData, null, 2), "utf8");
+  } catch (err) {
+    logger.error("Failed to update img_info.json:", err.message);
+  }
+
+  return { filepath, filename };
+}
+
+// ── Image Generation (Gemini Native) ────────────────────────────────────────
+
+async function generateImage(prompt) {
+  const cfg = loadConfig();
+  const imageModels = cfg.models?.image_gen || ["gemini-2.0-flash-preview-image-generation"];
+
+  for (const model of imageModels) {
+    try {
+      const response = await genai.models.generateContent({
+        model: model,
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        config: {
+          responseModalities: ["TEXT", "IMAGE"],
+          temperature: 1.0,
+        },
+      });
+
+      // Extract image from response parts
+      if (response.candidates && response.candidates[0]?.content?.parts) {
+        for (const part of response.candidates[0].content.parts) {
+          if (part.inlineData) {
+            const mimeType = part.inlineData.mimeType || "image/png";
+            const extMap = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif" };
+            const ext = extMap[mimeType] || ".png";
+            const filename = `gen_${Date.now()}${ext}`;
+            const filepath = path.join(LIB_GEN_IMG, filename);
+
+            const buffer = Buffer.from(part.inlineData.data, "base64");
+            fs.writeFileSync(filepath, buffer);
+            logger.log(`[ImageGen] Generated image saved: ${filename}`);
+            return { filepath, filename };
+          }
+        }
+      }
+
+      logger.warn(`[ImageGen] Model ${model} returned no image data.`);
+    } catch (err) {
+      logger.warn(`[ImageGen] Model ${model} failed:`, err.message);
+    }
+  }
+
+  return null; // All models failed
+}
+
+// ── Video Generation (Gemini Native) ────────────────────────────────────────
+
+async function generateVideo(prompt) {
+  const cfg = loadConfig();
+  const videoModels = cfg.models?.video_gen || ["veo-2.0-generate-001"];
+
+  for (const model of videoModels) {
+    try {
+      const response = await genai.models.generateContent({
+        model: model,
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        config: {
+          responseModalities: ["TEXT", "VIDEO"],
+          temperature: 1.0,
+        },
+      });
+
+      // Extract video from response parts
+      if (response.candidates && response.candidates[0]?.content?.parts) {
+        for (const part of response.candidates[0].content.parts) {
+          if (part.inlineData || part.fileData) { // Veo might return inlineData or a fileData URL
+            // If inlineData
+            if (part.inlineData) {
+              const mimeType = part.inlineData.mimeType || "video/mp4";
+              const extMap = { "video/mp4": ".mp4", "video/webm": ".webm" };
+              const ext = extMap[mimeType] || ".mp4";
+              const filename = `gen_${Date.now()}${ext}`;
+              const filepath = path.join(LIB_GEN_VID, filename);
+
+              const buffer = Buffer.from(part.inlineData.data, "base64");
+              fs.writeFileSync(filepath, buffer);
+              logger.log(`[VideoGen] Generated video saved: ${filename}`);
+              return { filepath, filename };
+            }
+          }
+        }
+      }
+
+      logger.warn(`[VideoGen] Model ${model} returned no video data.`);
+    } catch (err) {
+      logger.warn(`[VideoGen] Model ${model} failed:`, err.message);
+    }
+  }
+  return null;
+}
+
+// ── Message Classification ─────────────────────────────────────────────────────────
 
 async function classifyPrompt(text) {
   const prompt = `Classify the following user message into one of these categories:
@@ -290,31 +486,59 @@ User message: "${text}"`;
   return "NORMAL"; // Fallback to normal on classification error across all default models
 }
 
-async function generateReply(channelId, userText, imageParts = [], guildId = null) {
+async function generateReply(channelId, userText, guildId = null) {
   // User messages are now pushed to history in messageCreate before calling this
 
   const history = getHistory(channelId);
 
-  // Build contents array from text-only history
-  const contents = history.map((entry) => ({
-    role: entry.role,
-    parts: [{ text: entry.text }],
-  }));
+  // Build contents array from history, converting cached files back to inlineData just-in-time
+  const contents = history.map((entry) => {
+    const parts = [{ text: entry.text }];
+    
+    if (entry.attachments && entry.attachments.length > 0) {
+      for (const att of entry.attachments) {
+        try {
+          if (fs.existsSync(att.filepath)) {
+            const buffer = fs.readFileSync(att.filepath);
+            parts.push({
+              inlineData: {
+                data: buffer.toString("base64"),
+                mimeType: att.mimeType
+              }
+            });
+          }
+        } catch (err) {
+          logger.warn(`Failed to read cached attachment ${att.filepath}:`, err.message);
+        }
+      }
+    }
+    
+    return { role: entry.role, parts };
+  });
 
-  // Append image parts to the LAST user message (current turn) so Gemini can see them
-  if (imageParts.length > 0 && contents.length > 0) {
-    const lastMsg = contents[contents.length - 1];
-    lastMsg.parts.push(...imageParts);
-  }
-
-  // Build system prompt with memories injected
+  // Build system prompt with memories and image list injected
   const memoryBlock = guildId ? buildMemoryBlock(guildId) : "";
-  const SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + memoryBlock;
+  const savedImages = getSavedImagesList();
+  const imagesBlock = savedImages.length > 0 
+    ? `\n\n--- YOUR SAVED IMAGES ---\nYou currently have these images saved in your library:\n${savedImages.map(f => `- ${f}`).join("\n")}\nYou can send them using [SEND_IMG: name].\n--- END SAVED IMAGES ---` 
+    : "\n\n--- YOUR SAVED IMAGES ---\nYour library is empty. You can save images using [SAVE_IMG: url | name].\n--- END SAVED IMAGES ---";
+    
+  const SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + memoryBlock + imagesBlock;
 
-  // 1. Determine task type
+  // 1. Determine task type — check for forced tags first
   let taskType = "NORMAL";
-  if (userText.length > 10) {
-    taskType = await classifyPrompt(userText);
+  let cleanedUserText = userText;
+
+  if (/\[SEARCH\]/i.test(userText)) {
+    taskType = "SEARCH";
+    cleanedUserText = userText.replace(/\[SEARCH\]/gi, "").trim() || userText;
+    logger.log(`[Forced] User forced SEARCH mode`);
+  } else if (/\[THINKING\]/i.test(userText)) {
+    taskType = "THINKING";
+    cleanedUserText = userText.replace(/\[THINKING\]/gi, "").trim() || userText;
+    logger.log(`[Forced] User forced THINKING mode`);
+  } else if (cleanedUserText.length > 10) {
+    taskType = await classifyPrompt(cleanedUserText);
   }
 
   const cfg = loadConfig();
@@ -491,6 +715,12 @@ const commands = [
     .setDescription("Bulk delete messages")
     .addIntegerOption(option => option.setName('amount').setDescription('Number of messages to delete (1-100)').setRequired(true).setMinValue(1).setMaxValue(100))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages),
+  new SlashCommandBuilder()
+    .setName("add_image")
+    .setDescription("[Admin] Add an image to the bot's library via URL or attachment")
+    .addStringOption(option => option.setName('url').setDescription('Direct URL to the image').setRequired(false))
+    .addAttachmentOption(option => option.setName('file').setDescription('Image file upload').setRequired(false))
+    .addStringOption(option => option.setName('name').setDescription('Optional custom name for the image').setRequired(false)),
 ].map((cmd) => cmd.toJSON());
 
 async function registerCommands() {
@@ -546,9 +776,28 @@ client.on("messageCreate", async (message) => {
   const userText = cleanContent(message);
   const userName = message.author.displayName || message.author.username;
   const userId = message.author.id;
+  const timestamp = message.createdAt.toISOString();
+
+  // Build enriched history string with timestamp and reply context
+  let historyPrefix = `[${timestamp}] ${userName} (ID: ${userId})`;
+  
+  if (message.reference) {
+    try {
+      const repliedMsg = await message.channel.messages.fetch(message.reference.messageId);
+      const replyAuthor = repliedMsg.author.displayName || repliedMsg.author.username;
+      const replyAuthorId = repliedMsg.author.id;
+      const replyContent = (repliedMsg.content || "").substring(0, 100);
+      historyPrefix += ` [replying to ${replyAuthor} (ID: ${replyAuthorId}): "${replyContent}"]`;
+    } catch { }
+  }
+
+  // Download and cache any supported image/pdf attachments right away so they enter history
+  const cachedAttachments = message.attachments.size > 0
+    ? await cacheAttachments(message.attachments)
+    : [];
 
   // ALWAYS add every message to history so the bot can follow the conversation
-  pushHistory(message.channel.id, "user", `${userName} (ID: ${userId}): ${userText}`);
+  pushHistory(message.channel.id, "user", `${historyPrefix}: ${userText}`, cachedAttachments);
 
   if (isAIPaused) return;
 
@@ -577,20 +826,18 @@ client.on("messageCreate", async (message) => {
   try {
     await message.channel.sendTyping();
 
-    // Download any supported image/pdf attachments
-    const imageParts = message.attachments.size > 0
-      ? await attachmentsToParts(message.attachments)
-      : [];
-
     const reply = await generateReply(
       message.channel.id,
       userText,
-      imageParts,
       message.guildId
     );
 
     // Process any memory operations from the AI's response (silently)
     let finalReply = reply.trim();
+    
+    // Log the full raw response before any tags are stripped out
+    logger.log(`\n[Raw AI Response]:\n${finalReply}\n--------------------------`);
+
     if (message.guildId) {
       finalReply = processMemoryTags(finalReply, message.guildId);
     }
@@ -619,6 +866,76 @@ client.on("messageCreate", async (message) => {
       }
     }
 
+    // ── Process [IMGGEN: prompt] tag ────────────────────────────────────
+    const attachments = [];
+    const genImgMatch = finalReply.match(/\[IMGGEN:\s*(.+?)\]/i);
+    if (genImgMatch) {
+      const imgPrompt = genImgMatch[1].trim();
+      finalReply = finalReply.replace(/\[IMGGEN:\s*.+?\]/gi, "").trim();
+      
+      try {
+        await message.channel.sendTyping();
+        const result = await generateImage(imgPrompt);
+        if (result) {
+          attachments.push(new AttachmentBuilder(result.filepath, { name: result.filename }));
+        } else {
+          finalReply += "\n\n⚠️ *Image generation failed — all models exhausted.*";
+        }
+      } catch (err) {
+        logger.error("[IMGGEN] Error:", err.message);
+        finalReply += "\n\n⚠️ *Image generation encountered an error.*";
+      }
+    }
+
+    // ── Process [VIDGEN: prompt] tag ────────────────────────────────────
+    const genVidMatch = finalReply.match(/\[VIDGEN:\s*(.+?)\]/i);
+    if (genVidMatch) {
+      const vidPrompt = genVidMatch[1].trim();
+      finalReply = finalReply.replace(/\[VIDGEN:\s*.+?\]/gi, "").trim();
+      
+      try {
+        await message.channel.sendTyping();
+        const result = await generateVideo(vidPrompt);
+        if (result) {
+          attachments.push(new AttachmentBuilder(result.filepath, { name: result.filename }));
+        } else {
+          finalReply += "\n\n⚠️ *Video generation failed — all models exhausted.*";
+        }
+      } catch (err) {
+        logger.error("[VIDGEN] Error:", err.message);
+        finalReply += "\n\n⚠️ *Video generation encountered an error.*";
+      }
+    }
+
+    // ── Process [SAVE_IMG: url | name] tag ───────────────────────────────────
+    const saveImgRegex = /\[SAVE_IMG:\s*(https?:\/\/[^\s\|]+)\s*\|\s*([^\]]+)\]/gi;
+    let saveMatch;
+    while ((saveMatch = saveImgRegex.exec(finalReply)) !== null) {
+      const url = saveMatch[1].trim();
+      const customName = saveMatch[2].trim();
+      try {
+        const { filename } = await downloadImageToLib(url, customName);
+        logger.log(`[SaveImg] AI saved image from URL as ${filename}`);
+      } catch (err) {
+        logger.error(`[SaveImg] AI failed to save image:`, err.message);
+      }
+    }
+    // Strip all save tags
+    finalReply = finalReply.replace(/\[SAVE_IMG:\s*https?:\/\/[^\s\|]+\s*\|\s*[^\]]+\]/gi, "").trim();
+
+    // ── Process [SEND_IMG: name] tag ─────────────────────────────────────────
+    const sendImgMatch = finalReply.match(/\[SEND_IMG:\s*([^\]]+)\]/i);
+    if (sendImgMatch) {
+      const imgName = sendImgMatch[1].trim();
+      finalReply = finalReply.replace(/\[SEND_IMG:\s*[^\]]+\]/gi, "").trim();
+      const savedImgPath = getSavedImage(imgName);
+      if (savedImgPath) {
+        attachments.push(new AttachmentBuilder(savedImgPath));
+      } else {
+        logger.warn(`[SendImg] AI tried to send non-existent image: ${imgName}`);
+      }
+    }
+
     let shouldEmbed = false;
 
     if (finalReply.includes("[EMBED]")) {
@@ -628,6 +945,17 @@ client.on("messageCreate", async (message) => {
     // Also embed if there's a system fallback warning
     if (finalReply.includes("⚠️ *(Auto-Fallback")) {
       shouldEmbed = true;
+    }
+
+    // Cleanup excessive newlines caused by stripping tags
+    finalReply = finalReply.replace(/\n\s*\n/g, "\n\n").trim();
+
+    // Build base reply options
+    const replyOpts = {
+      allowedMentions: { repliedUser: false, parse: ['users', 'roles'] },
+    };
+    if (attachments.length > 0) {
+      replyOpts.files = attachments;
     }
 
     if (shouldEmbed) {
@@ -653,7 +981,7 @@ client.on("messageCreate", async (message) => {
             }
             if (embedObj.footer?.text) embed.setFooter({ text: String(embedObj.footer.text).substring(0, 2048) });
 
-            await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false, parse: ['users', 'roles'] } });
+            await message.reply({ ...replyOpts, embeds: [embed] });
             isParsedJson = true;
           }
         }
@@ -665,22 +993,29 @@ client.on("messageCreate", async (message) => {
         // Discord Embed description limit is 4096 chars
         if (finalReply.length > 4000) {
           const chunks = finalReply.match(/[\s\S]{1,4000}/g) || [finalReply];
-          for (const chunk of chunks) {
+          for (let i = 0; i < chunks.length; i++) {
             const embed = new EmbedBuilder()
               .setColor(0x4285F4)
-              .setDescription(chunk);
-            await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false, parse: ['users', 'roles'] } });
+              .setDescription(chunks[i]);
+            // Only attach files on the first chunk
+            const opts = i === 0 ? { ...replyOpts, embeds: [embed] } : { embeds: [embed], allowedMentions: replyOpts.allowedMentions };
+            await message.reply(opts);
           }
         } else {
           const embed = new EmbedBuilder()
             .setColor(0x4285F4)
             .setDescription(finalReply);
-          await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false, parse: ['users', 'roles'] } });
+          await message.reply({ ...replyOpts, embeds: [embed] });
         }
       }
     } else {
       // Plain text for short/casual chats
-      await message.reply({ content: finalReply, allowedMentions: { repliedUser: false, parse: ['users', 'roles'] } });
+      if (!finalReply && attachments.length > 0) {
+        // Image-only response (no text)
+        await message.reply(replyOpts);
+      } else {
+        await message.reply({ ...replyOpts, content: finalReply });
+      }
     }
   } catch (err) {
     logger.error("Error handling message:", err);
@@ -733,7 +1068,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Admin Commands ────────────────────────────────────────────────────────
 
-  const adminCommands = ["reset_memory", "pause_ai", "config"];
+  const adminCommands = ["reset_memory", "pause_ai", "config", "add_image"];
   if (adminCommands.includes(interaction.commandName)) {
     const adminEnv = process.env.ADMINS || "";
     const admins = adminEnv.split(",").map(id => id.trim()).filter(id => id);
@@ -777,6 +1112,29 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.reply({ content: `✅ Config updated: \`${setting}\` is now \`${newValue}\`. Note: This setting has immediately taken effect!`, flags: MessageFlags.Ephemeral });
       } catch (err) {
         return interaction.reply({ content: `❌ Failed to save config: ${err.message}`, flags: MessageFlags.Ephemeral });
+      }
+    }
+
+    if (interaction.commandName === "add_image") {
+      const url = interaction.options.getString('url');
+      const attachment = interaction.options.getAttachment('file');
+      const customName = interaction.options.getString('name');
+      
+      const targetUrl = attachment ? attachment.url : url;
+
+      if (!targetUrl) {
+        return interaction.reply({ content: "❌ You must provide either a URL or an attachment.", flags: MessageFlags.Ephemeral });
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      try {
+        const { filename } = await downloadImageToLib(targetUrl, customName);
+        const totalImages = getSavedImagesList().length;
+        return interaction.editReply({ content: `✅ Image saved as \`${filename}\`. Library now has **${totalImages}** image(s).` });
+      } catch (err) {
+        logger.error("[add_image] Failed:", err.message);
+        return interaction.editReply({ content: `❌ Failed to download image: ${err.message}` });
       }
     }
   }
