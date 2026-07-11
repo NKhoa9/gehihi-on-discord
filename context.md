@@ -17,6 +17,8 @@ Welcome to the Gemini Discord Bot codebase! This document provides a comprehensi
 - `config.json` — Central configuration file for all quick-change settings (models, rates, voice, etc.).
 - `system_prompt.txt` — The core system prompt containing instructions and persona for the AI.
 - `memories.json` — Persistent AI memory storage (per-guild, auto-generated, gitignored).
+- `lib/ran_img/` — Library of random images the bot can send via `[IMG]` tag. Persists across restarts.
+- `lib/gen_img/` — AI-generated images stored here automatically. Gitignored.
 - `.env` — Environment secrets (DISCORD_TOKEN, GEMINI_API_KEY).
 - `context.md` — This file.
 
@@ -28,7 +30,7 @@ All tunable settings live in `config.json` for quick changes without touching co
 - `random_appear_rate` — Probability (0–1) of the bot spontaneously responding to unmentioned messages (default: 0.2).
 - `silence_duration_ms` — Voice silence threshold before the bot considers the user done speaking (default: 300).
 - `voice_name` — Gemini Live voice persona (e.g., "Aoede", "Charon", "Fenrir", "Kore", "Puck").
-- `models.default` / `models.thinking` / `models.search` / `models.live` — Model lists for each task category.
+- `models.default` / `models.thinking` / `models.search` / `models.live` / `models.image_gen` — Model lists for each task category.
 
 Both `bot.js` and `voice.js` read from this file dynamically on each execution (e.g., inside message and interaction handlers), allowing settings to be hot-reloaded without restarting the bot.
 
@@ -48,7 +50,8 @@ The AI has full control over its formatting via the `[EMBED]` tag mechanism.
 
 ### 4. Autonomous Interaction & Personality
 The bot behaves like a true participant in the server rather than just a command-response tool.
-- **Contextual Awareness**: Every user message in the server is silently added to the conversation history (prefixed with the user's display name **and Discord User ID**). This means the AI always knows the ongoing context and exactly who is speaking, allowing it to remember specific users (e.g. for creating admin whitelists).
+- **Contextual Awareness**: Every user message in the server is silently added to the conversation history (prefixed with the user's display name **and Discord User ID**, along with a **full ISO timestamp** and **reply context** if the message is a reply). This means the AI always knows the ongoing context, exactly who is speaking, when they spoke, and who they're replying to.
+- **Enriched Input Format**: Messages in history follow the format: `[ISO timestamp] Username (ID: 123) [replying to OtherUser (ID: 456): "original text..."]: Message content`. This enables the AI to understand conversation threading and timing.
 - **Probability Gate**: To save API quota while still acting autonomously, the bot will randomly "wake up" to process normal, unmentioned chat messages (configurable via `random_appear_rate` in `config.json`). It will *always* process messages if directly `@mentioned` or replied to.
 - **Dynamic Reactions**: When processing a message, the AI is instructed in its system prompt that it has full autonomy to:
   - Output `[REACT: emoji]` to react to the message with a chosen emoji. It can do this *alone* to just react, or alongside a text response to react and reply simultaneously!
@@ -58,12 +61,12 @@ The bot behaves like a true participant in the server rather than just a command
 ### 5. Persistent AI Memory System
 The AI can autonomously create, edit, and delete its own memories — persisted to `memories.json` (per-guild).
 - **How it works**: The system prompt teaches the AI to use special tags anywhere in its response:
-  - `[MEMORY:ADD text]` — Save a new memory.
-  - `[MEMORY:EDIT #N text]` — Edit memory number N.
-  - `[MEMORY:DELETE #N reason]` — Delete memory number N.
+  - `[MEMORY:ADD text]` — Save a new memory (generates a unique alphanumeric ID).
+  - `[MEMORY:EDIT id text]` — Edit a memory by its alphanumeric ID.
+  - `[MEMORY:DELETE id reason]` — Delete a memory by its alphanumeric ID.
 - **Silent processing**: After the AI generates its response, `processMemoryTags()` extracts and executes all memory operations, then strips the tags from the visible reply. Users never see the raw tags.
-- **Injection**: Before each API call, `buildMemoryBlock()` appends the current memories to the system prompt so the AI always has access to them.
-- **Storage**: `memories.json` stores memories keyed by guild ID. Each memory has `text`, `createdAt`, and optionally `updatedAt` fields.
+- **Injection**: Before each API call, `buildMemoryBlock()` appends the current memories to the system prompt so the AI always has access to them, formatting them as `[ID: uuid] memory text`.
+- **Storage**: `memories.json` stores memories keyed by guild ID. Each memory has an `id`, `text`, `createdAt`, and optionally `updatedAt` fields.
 - **Proactive usage**: The AI is instructed to proactively save useful information like user preferences, nicknames, birthdays, inside jokes, etc.
 - **Viewing memories**: Users can use the `/memories` slash command to view all saved memories for their server (ephemeral, only visible to the user who runs it).
 
@@ -74,6 +77,21 @@ The bot supports reading multiple attachment types natively by converting them t
   - Documents & Text (`pdf`, `txt`, `html`, `css`, `js`, `json`, `csv`, `md`, `py`, `xml`)
   - Audio (`wav`, `mp3`, `mpeg`, `ogg`)
   - Video (`mp4`, `mpeg`, `webm`)
+
+### 6.5. Media Abilities (Images & AI Generation)
+The AI has three autonomous media-sending capabilities:
+- **Library Images**: The AI can autonomously save images it finds to its library (`lib/img/`) using `[SAVE_IMG: url | name]` and send them later using `[SEND_IMG: name]`. The system prompt is injected with a list of currently available images. Admins can also add images manually via the `/add_image` slash command (supports both URL and file attachments).
+- **AI Image Generation (`[IMGGEN: prompt]` tag)**: The AI can output `[IMGGEN: detailed description]` to generate a brand-new image using Gemini's native image generation (`gemini-2.0-flash-preview-image-generation` by default). Generated images are saved to `lib/gen_img/`.
+- **AI Video Generation (`[VIDGEN: prompt]` tag)**: The AI can output `[VIDGEN: detailed description]` to generate a video using Gemini's video generation (`veo-2.0-generate-001` by default). Generated videos are saved to `lib/gen_vid/`.
+- All tags can be combined with text and other tags (e.g., `[REACT]`, `[EMBED]`).
+- On failure, a warning is appended to the response instead of crashing.
+
+### 6.6. Forced Search/Thinking Mode
+Users can bypass the automatic prompt classifier by including `[SEARCH]` or `[THINKING]` tags in their message:
+- `[SEARCH] what's the weather in Tokyo?` → Forces the bot to use search-enabled models.
+- `[THINKING] solve this integral...` → Forces the bot to use thinking/reasoning models.
+- The tags are stripped from the text before sending to the AI.
+- If all models in the forced category are exhausted (quota), the bot gracefully falls back to `NORMAL` models.
 
 ### 7. Conversation History (per-channel)
 - The bot maintains a per-channel conversation history (`channelHistory` map) in memory.
@@ -110,6 +128,7 @@ The bot provides a suite of slash commands for server management.
 - `/unban [userid] [reason]` — Unbans a member by their ID.
 - `/timeout [user] [duration] [reason]` — Times out a member for a specified number of minutes.
 - `/purge [amount]` — Bulk deletes up to 100 recent messages.
+- `/add_image [url]` — [Admin] Downloads an image from a URL and adds it to the random image library (`lib/ran_img/`).
 
 ### 10. Logging
 - All bot activity is logged to both console and `bot.log` via a custom logger (`logger.log`, `logger.warn`, `logger.error`).
