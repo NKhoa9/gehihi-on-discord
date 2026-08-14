@@ -26,6 +26,9 @@ Welcome to the Gemini Discord Bot codebase! This document provides a comprehensi
 
 ### 1. Centralized Configuration (`config.json`)
 All tunable settings live in `config.json` for quick changes without touching code:
+- `logging` — Toggle file logging on/off (default: `true`). Console logging always remains active regardless of this setting.
+- `debug_logging` — Toggle ultra-detailed step-by-step debug logging (default: `true`).
+- `show_errors_in_chat` — If `false`, massive model fallback errors are hidden from the Discord chat and replaced with a compact warning, keeping chat clean (default: `false`).
 - `max_history` — Messages to keep in memory per channel (default: 30).
 - `random_appear_rate` — Probability (0–1) of the bot spontaneously responding to unmentioned messages (default: 0.2).
 - `silence_duration_ms` — Voice silence threshold before the bot considers the user done speaking (default: 300).
@@ -34,8 +37,9 @@ All tunable settings live in `config.json` for quick changes without touching co
 
 Both `bot.js` and `voice.js` read from this file dynamically on each execution (e.g., inside message and interaction handlers), allowing settings to be hot-reloaded without restarting the bot.
 
-### 2. Intelligent Model Routing & Fallback System
-To optimize API usage and provide the best answers (especially on free tiers), the bot features a dynamic model router.
+### 2. Intelligent Model Routing & Provider Abstraction
+To optimize API usage and provide the best answers, the bot uses a dynamic model router and an abstract `AIProvider`.
+- **AI Abstraction**: The core generation logic is routed through an `AIProvider` class interface. This allows the bot to easily swap out Gemini for other future AI brands (OpenAI, Anthropic, etc.) by implementing a new provider subclass.
 - **Classification**: Before answering, if a prompt is >10 characters, it uses a fast, lightweight call (`classifyPrompt`) to categorize the prompt into `SEARCH`, `THINKING`, or `NORMAL`.
 - **Model Lists**: Each category maps to an array of models defined in `config.json`.
 - **Auto-Fallback**: The bot attempts to use the first model in the corresponding list. If the API returns a rate limit (429) or quota exceeded error, it seamlessly fails over to the next model in the list. If all models in the category fail, it falls back to the `MODELS_DEFAULT` list.
@@ -79,8 +83,14 @@ The bot supports reading multiple attachment types natively by converting them t
   - Video (`mp4`, `mpeg`, `webm`)
 
 ### 6.5. Media Abilities (Images & AI Generation)
-The AI has three autonomous media-sending capabilities:
-- **Library Images**: The AI can autonomously save images it finds to its library (`lib/img/`) using `[SAVE_IMG: url | name]` and send them later using `[SEND_IMG: name]`. The system prompt is injected with a list of currently available images. Admins can also add images manually via the `/add_image` slash command (supports both URL and file attachments).
+The AI has several autonomous media-sending capabilities:
+- **Library Images**: The AI can autonomously save images it finds to its library (`lib/img/`) using `[SAVE_IMG: url | name]` and send them later using `[SEND_IMG: name]`. The system prompt is injected with a list of currently available images. Admins can also add images manually via the `/add_image` slash command (supports both URL and file attachments). The library auto-deletes missing entries from the index.
+- **Image Web Search**: The AI can use `[SEARCH_IMG: query]` to find an image on the web (via Google Custom Search or DuckDuckGo fallback). The bot automatically downloads, validates, saves, and sends the first valid image it finds.
+- **Image Validation Pipeline**: Before any image is saved (via `[SAVE_IMG]` or `/add_image`), it goes through a multi-step validation:
+  1. **HTTP check** — verifies the response is `200 OK` and has an image `Content-Type`.
+  2. **Size check** — rejects images < 1KB (placeholders/errors) or > 25MB.
+  3. **Magic byte check** — validates the file's binary header matches a known image format (PNG, JPEG, GIF, WEBP, BMP, HEIF/HEIC), catching servers that return HTML with image content-types.
+  4. On failure, the download is rejected and a user-visible warning is appended to the response.
 - **AI Image Generation (`[IMGGEN: prompt]` tag)**: The AI can output `[IMGGEN: detailed description]` to generate a brand-new image using Gemini's native image generation (`gemini-2.0-flash-preview-image-generation` by default). Generated images are saved to `lib/gen_img/`.
 - **AI Video Generation (`[VIDGEN: prompt]` tag)**: The AI can output `[VIDGEN: detailed description]` to generate a video using Gemini's video generation (`veo-2.0-generate-001` by default). Generated videos are saved to `lib/gen_vid/`.
 - All tags can be combined with text and other tags (e.g., `[REACT]`, `[EMBED]`).
@@ -115,7 +125,8 @@ The bot provides a suite of slash commands for server management.
 **Admin Commands (Requires User ID to be in `ADMINS` inside `.env`)**:
 - `/reset_memory` — Completely wipes the AI's saved memories for the server.
 - `/pause_ai` — Toggles pausing/unpausing the AI from generating text responses globally.
-- `/config [setting] [value]` — Updates `config.json` settings directly from Discord (e.g., `random_appear_rate`, `silence_duration_ms`). Settings take effect immediately.
+- `/config [setting] [value]` — Updates `config.json` settings directly from Discord (e.g., `random_appear_rate`, `silence_duration_ms`, `logging`). Settings take effect immediately.
+- `/config_check` — [Admin] Displays the entire current bot configuration in a rich embed (settings, model lists, image library count, AI pause status).
 
 **Utility & Moderation Commands (Requires appropriate Discord permissions)**:
 - `/ping` — Checks bot latency.
@@ -132,6 +143,7 @@ The bot provides a suite of slash commands for server management.
 
 ### 10. Logging
 - All bot activity is logged to both console and `bot.log` via a custom logger (`logger.log`, `logger.warn`, `logger.error`).
+- **File logging can be toggled** on/off via the `logging` setting in `config.json` or the `/config logging on|off` command. Console output is always active.
 - The bot logs its **responses** (not user messages) for debugging and monitoring.
 - Memory operations (add/edit/delete) are logged with details.
 - Command usage is logged with the user's tag and command name.
