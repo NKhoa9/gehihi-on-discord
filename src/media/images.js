@@ -3,6 +3,8 @@ import path from "path";
 import { logger } from "../utils/logger.js";
 
 const LIB_IMG = path.resolve("lib/img");
+const LIB_CUSTOM_IMG = path.resolve("lib/custom_img");
+if (!fs.existsSync(LIB_CUSTOM_IMG)) fs.mkdirSync(LIB_CUSTOM_IMG, { recursive: true });
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".heif"]);
 
@@ -96,7 +98,8 @@ export async function searchGoogleImage(query) {
   return null;
 }
 
-export async function downloadImageToLib(url, customName = null) {
+export async function downloadImageToLib(url, customName = null, isCustomUserImg = false) {
+  const targetLib = isCustomUserImg ? LIB_CUSTOM_IMG : LIB_IMG;
   const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw new Error(`HTTP ${res.status} — server returned an error`);
 
@@ -117,15 +120,17 @@ export async function downloadImageToLib(url, customName = null) {
     "image/heif": ".heif", "image/bmp": ".bmp",
   };
   const ext = extMap[mime] || ".png";
-  const nameBase = customName ? customName.replace(/[^a-z0-9_-]/gi, "_") : `img_${Date.now()}`;
+  const nameBase = customName
+    ? customName.replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").replace(/^[\s.]+|[\s.]+$/g, "").substring(0, 100) || `img_${Date.now()}`
+    : `img_${Date.now()}`;
   const filename = `${nameBase}${ext}`;
-  const filepath = path.join(LIB_IMG, filename);
+  const filepath = path.join(targetLib, filename);
 
   fs.writeFileSync(filepath, buffer);
   logger.log(`[SaveImg] Validated & saved: ${filename} (${(buffer.length / 1024).toFixed(1)}KB, ${mime})`);
   
   try {
-    const infoFile = path.join(LIB_IMG, "img_info.json");
+    const infoFile = path.join(targetLib, "img_info.json");
     let infoData = {};
     if (fs.existsSync(infoFile)) infoData = JSON.parse(fs.readFileSync(infoFile, "utf8"));
     infoData[filename] = {
