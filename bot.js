@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { Client, GatewayIntentBits, ActivityType, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, MessageFlags, AttachmentBuilder } from "discord.js";
+import { Client, GatewayIntentBits, ActivityType, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, MessageFlags, AttachmentBuilder, Collection } from "discord.js";
 import fs from "fs";
 import path from "path";
 import { joinAndStartLive, leaveLive } from "./voice.js";
@@ -22,10 +22,12 @@ const LIB_IMG = path.resolve("lib/img");
 const LIB_GEN_IMG = path.resolve("lib/gen_img");
 const LIB_GEN_VID = path.resolve("lib/gen_vid");
 const LIB_CACHE = path.resolve("lib/cache");
+const LIB_CUSTOM_IMG = path.resolve("lib/custom_img");
 fs.mkdirSync(LIB_IMG, { recursive: true });
 fs.mkdirSync(LIB_GEN_IMG, { recursive: true });
 fs.mkdirSync(LIB_GEN_VID, { recursive: true });
 fs.mkdirSync(LIB_CACHE, { recursive: true });
+fs.mkdirSync(LIB_CUSTOM_IMG, { recursive: true });
 
 // ── Discord Bot ─────────────────────────────────────────────────────────────
 
@@ -115,9 +117,20 @@ const commands = [
   new SlashCommandBuilder()
     .setName("add_image")
     .setDescription("[Admin] Add an image to the bot's library via URL or attachment")
+    .addStringOption(option => option.setName('name').setDescription('Custom name for the image').setRequired(true))
     .addStringOption(option => option.setName('url').setDescription('Direct URL to the image').setRequired(false))
-    .addAttachmentOption(option => option.setName('file').setDescription('Image file upload').setRequired(false))
-    .addStringOption(option => option.setName('name').setDescription('Optional custom name for the image').setRequired(false)),
+    .addAttachmentOption(option => option.setName('file').setDescription('Image file upload').setRequired(false)),
+
+  new SlashCommandBuilder()
+    .setName("add_custom_img")
+    .setDescription("Add an image to the bot's library (rate-limited)")
+    .addStringOption(option => option.setName('name').setDescription('Custom name for the image').setRequired(true))
+    .addStringOption(option => option.setName('url').setDescription('Direct URL to the image').setRequired(false))
+    .addAttachmentOption(option => option.setName('file').setDescription('Image file upload').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName("logs")
+    .setDescription("[Admin] Fetch the latest bot log entries")
+    .addIntegerOption(option => option.setName('lines').setDescription('Number of lines to fetch (default 50, max 200)').setRequired(false).setMinValue(1).setMaxValue(200)),
 ].map((cmd) => cmd.toJSON());
 
 async function registerCommands() {
@@ -135,7 +148,81 @@ async function registerCommands() {
 function cleanContent(message) {
   let text = message.content;
   text = text.replace(new RegExp(`<@!?${client.user.id}>`, "g"), "").trim();
+  // Convert Discord custom emojis <:name:id> and <a:name:id> to readable :name:
+  text = text.replace(/<a?:(\w+):\d+>/g, ':$1:');
   return text || "hey";
+}
+
+// ── Rate Limiting for /add_custom_img ───────────────────────────────────────
+const IMG_RATE_LIMIT = 3;          // max images per window
+const IMG_RATE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const IMG_MAX_SIZE = 8 * 1024 * 1024;      // 8MB
+const userImgRateMap = new Map(); // userId -> [timestamps]
+
+function checkImgRateLimit(userId) {
+  const now = Date.now();
+  const timestamps = userImgRateMap.get(userId) || [];
+  const valid = timestamps.filter(t => now - t < IMG_RATE_WINDOW_MS);
+  userImgRateMap.set(userId, valid);
+  if (valid.length >= IMG_RATE_LIMIT) {
+    const oldest = valid[0];
+    const resetIn = Math.ceil((oldest + IMG_RATE_WINDOW_MS - now) / 60000);
+    return { allowed: false, resetIn };
+  }
+  return { allowed: true };
+}
+
+function recordImgUpload(userId) {
+  const timestamps = userImgRateMap.get(userId) || [];
+  timestamps.push(Date.now());
+  userImgRateMap.set(userId, timestamps);
+}
+
+// ── Smart Text Splitter ─────────────────────────────────────────────────────
+function smartSplit(text, maxLength) {
+  if (text.length <= maxLength) return [text];
+
+  const chunks = [];
+  let currentText = text;
+
+  while (currentText.length > maxLength) {
+    let splitPos = -1;
+
+    // 1. Try to split by paragraph (\n\n)
+    let pMatch = [...currentText.substring(0, maxLength).matchAll(/\n\n/g)];
+    if (pMatch.length > 0) splitPos = pMatch[pMatch.length - 1].index;
+
+    // 2. Try single newline
+    if (splitPos === -1) {
+      let nMatch = [...currentText.substring(0, maxLength).matchAll(/\n/g)];
+      if (nMatch.length > 0) splitPos = nMatch[nMatch.length - 1].index;
+    }
+
+    // 3. Try sentence boundary (. ! ?)
+    if (splitPos === -1) {
+      let sMatch = [...currentText.substring(0, maxLength).matchAll(/([.!?])\s/g)];
+      if (sMatch.length > 0) splitPos = sMatch[sMatch.length - 1].index + 1;
+    }
+
+    // 4. Try word boundary (space)
+    if (splitPos === -1) {
+      splitPos = currentText.substring(0, maxLength).lastIndexOf(" ");
+    }
+
+    // 5. Hard split if no good boundary found
+    if (splitPos === -1 || splitPos === 0) {
+      splitPos = maxLength;
+    }
+
+    chunks.push(currentText.substring(0, splitPos).trim());
+    currentText = currentText.substring(splitPos).trim();
+  }
+
+  if (currentText.length > 0) {
+    chunks.push(currentText);
+  }
+
+  return chunks;
 }
 
 // ── Events ──────────────────────────────────────────────────────────────────
@@ -164,7 +251,8 @@ client.on("messageCreate", async (message) => {
       const repliedMsg = await message.channel.messages.fetch(message.reference.messageId);
       const replyAuthor = repliedMsg.author.displayName || repliedMsg.author.username;
       const replyAuthorId = repliedMsg.author.id;
-      const replyContent = (repliedMsg.content || "").substring(0, 100);
+      let replyContent = (repliedMsg.content || "").substring(0, 100);
+      replyContent = replyContent.replace(/<a?:(\w+):\d+>/g, ':$1:');
       historyPrefix += ` [replying to ${replyAuthor} (ID: ${replyAuthorId}): "${replyContent}"]`;
     } catch { }
   }
@@ -215,7 +303,7 @@ client.on("messageCreate", async (message) => {
       finalReply = processMemoryTags(finalReply, message.guildId);
     }
 
-    logger.log(`[Response] to ${userName} in ${message.channel.id}: ${finalReply.substring(0, 200)}`);
+    logger.log(`[Response] to ${userName} in ${message.channel.id}: ${finalReply}`);
 
     if (finalReply.includes("[IGNORE]")) return;
 
@@ -270,7 +358,7 @@ client.on("messageCreate", async (message) => {
       try {
         const url = await searchGoogleImage(query);
         if (url) {
-          const customName = query.replace(/[^a-z0-9_-]/gi, "_").substring(0, 20);
+          const customName = query.replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").replace(/^[\s.]+|[\s.]+$/g, "").substring(0, 50);
           const result = await downloadImageToLib(url, customName);
           attachments.push(new AttachmentBuilder(result.filepath, { name: result.filename }));
         } else {
@@ -317,6 +405,9 @@ client.on("messageCreate", async (message) => {
 
     finalReply = finalReply.replace(/\n\s*\n/g, "\n\n").trim();
 
+    // Task 4: Push the PROCESSED reply to history (after all tag stripping)
+    pushHistory(message.channel.id, "model", finalReply);
+
     const replyOpts = {
       allowedMentions: { repliedUser: false, parse: ['users', 'roles'] },
     };
@@ -347,8 +438,8 @@ client.on("messageCreate", async (message) => {
       } catch (e) { }
 
       if (!isParsedJson) {
-        if (finalReply.length > 4000) {
-          const chunks = finalReply.match(/[\s\S]{1,4000}/g) || [finalReply];
+        if (finalReply.length > 4096) {
+          const chunks = finalReply.match(/[\s\S]{1,4096}/g) || [finalReply];
           for (let i = 0; i < chunks.length; i++) {
             const embed = new EmbedBuilder().setColor(0x4285F4).setDescription(chunks[i]);
             const opts = i === 0 ? { ...replyOpts, embeds: [embed] } : { embeds: [embed], allowedMentions: replyOpts.allowedMentions };
@@ -362,6 +453,15 @@ client.on("messageCreate", async (message) => {
     } else {
       if (!finalReply && attachments.length > 0) {
         await message.reply(replyOpts);
+      } else if (finalReply.length > 2000) {
+        // Chunk long non-embed replies smartly to respect Discord's 2000 char limit
+        const chunks = smartSplit(finalReply, 2000);
+        for (let i = 0; i < chunks.length; i++) {
+          const opts = i === 0
+            ? { ...replyOpts, content: chunks[i] }
+            : { content: chunks[i], allowedMentions: replyOpts.allowedMentions };
+          await message.reply(opts);
+        }
       } else {
         await message.reply({ ...replyOpts, content: finalReply });
       }
@@ -399,7 +499,7 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  const adminCommands = ["reset_memory", "pause_ai", "config", "config_check", "add_image"];
+  const adminCommands = ["reset_memory", "pause_ai", "config", "config_check", "add_image", "logs"];
   if (adminCommands.includes(interaction.commandName)) {
     const adminEnv = process.env.ADMINS || "";
     const admins = adminEnv.split(",").map(id => id.trim()).filter(id => id);
@@ -494,6 +594,62 @@ client.on("interactionCreate", async (interaction) => {
       const imgCount = getSavedImagesList().length;
       embed.setFooter({ text: `Image library: ${imgCount} image(s) | Config loaded from config.json` });
       return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    }
+
+    if (interaction.commandName === "logs") {
+      const lineCount = interaction.options.getInteger('lines') || 50;
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const logContent = fs.readFileSync("bot.log", "utf-8");
+        const allLines = logContent.split("\n");
+        const tail = allLines.slice(-lineCount).join("\n");
+        if (tail.length <= 4000) {
+          const embed = new EmbedBuilder()
+            .setColor(0x2F3136)
+            .setTitle(`📋 Last ${lineCount} log lines`)
+            .setDescription(`\`\`\`\n${tail}\n\`\`\``)
+            .setFooter({ text: `Total log lines: ${allLines.length}` });
+          return interaction.editReply({ embeds: [embed] });
+        } else {
+          const buf = Buffer.from(tail, "utf-8");
+          const attachment = new AttachmentBuilder(buf, { name: "bot_log_tail.txt" });
+          return interaction.editReply({ content: `📋 Last ${lineCount} log lines (too long for embed, sent as file):`, files: [attachment] });
+        }
+      } catch (err) {
+        return interaction.editReply({ content: `❌ Failed to read log file: ${err.message}` });
+      }
+    }
+  }
+
+  // ── User Image Upload (rate-limited) ─────────────────────────────────────
+  if (interaction.commandName === "add_custom_img") {
+    const { allowed, resetIn } = checkImgRateLimit(interaction.user.id);
+    if (!allowed) {
+      return interaction.reply({ content: `❌ Rate limit reached! You can upload up to **${IMG_RATE_LIMIT}** images per hour. Try again in ~**${resetIn}** minute(s).`, flags: MessageFlags.Ephemeral });
+    }
+
+    const url = interaction.options.getString('url');
+    const attachment = interaction.options.getAttachment('file');
+    const customName = interaction.options.getString('name');
+    const targetUrl = attachment ? attachment.url : url;
+
+    if (!targetUrl) return interaction.reply({ content: "❌ You must provide either a URL or an attachment.", flags: MessageFlags.Ephemeral });
+
+    // Check file size for attachments
+    if (attachment && attachment.size > IMG_MAX_SIZE) {
+      return interaction.reply({ content: `❌ File too large! Maximum size is **${IMG_MAX_SIZE / 1024 / 1024}MB**. Your file is **${(attachment.size / 1024 / 1024).toFixed(1)}MB**.`, flags: MessageFlags.Ephemeral });
+    }
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    try {
+      const { filename } = await downloadImageToLib(targetUrl, customName, true);
+      recordImgUpload(interaction.user.id);
+      const totalImages = getSavedImagesList().length;
+      const remaining = IMG_RATE_LIMIT - (userImgRateMap.get(interaction.user.id)?.length || 0);
+      return interaction.editReply({ content: `✅ Image saved as \`${filename}\`. Library now has **${totalImages}** image(s).\n📊 You have **${remaining}** upload(s) remaining this hour.` });
+    } catch (err) {
+      return interaction.editReply({ content: `❌ Failed to download image: ${err.message}` });
     }
   }
 

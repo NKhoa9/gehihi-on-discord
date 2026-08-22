@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { logger } from "../utils/logger.js";
 import { loadConfig, sleep } from "../utils/config.js";
-import { getHistory, pushHistory } from "../core/history.js";
+import { getHistory } from "../core/history.js";
 import { getSavedImagesList } from "../media/images.js";
 import { buildMemoryBlock } from "../core/memory.js";
 import { AIProvider, GeminiProvider } from "./provider.js";
@@ -192,7 +192,6 @@ export async function generateReply(channelId, userText, guildId = null) {
         let finalReplyText = replyText || "hmm, I got nothing 🤔";
         if (reportedIssue) finalReplyText = reportedIssue + finalReplyText;
 
-        pushHistory(channelId, "model", finalReplyText);
         return finalReplyText;
       } catch (err) {
         const is429 = err?.message?.includes('"code":429') || err?.message?.includes("RESOURCE_EXHAUSTED") || err?.message?.includes("QUOTA_EXCEEDED") || err?.status === 429;
@@ -227,7 +226,6 @@ export async function generateReply(channelId, userText, guildId = null) {
           }
         }
 
-        pushHistory(channelId, "model", finalReplyText);
         return finalReplyText;
       } catch (err) {
         logger.error(`Fallback default model ${model} failed. Error:`, err.message);
