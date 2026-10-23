@@ -5,7 +5,9 @@ import { loadConfig, sleep } from "../utils/config.js";
 import { getHistory } from "../core/history.js";
 import { getSavedImagesList } from "../media/images.js";
 import { buildMemoryBlock } from "../core/memory.js";
-import { AIProvider, GeminiProvider } from "./provider.js";
+import { AIProvider, GeminiProvider, createGeminiProvider } from "./provider.js";
+import { getDonatedApiKeys } from "../core/keys.js";
+import { getTaskModels, resolveModelList } from "./models.js";
 
 const LIB_GEN_IMG = path.resolve("lib/gen_img");
 const LIB_GEN_VID = path.resolve("lib/gen_vid");
@@ -26,7 +28,7 @@ const BASE_SYSTEM_PROMPT = loadSystemPrompt();
 
 export async function generateImage(prompt) {
   const cfg = loadConfig();
-  const imageModels = cfg.models?.image_gen || ["gemini-2.0-flash-preview-image-generation"];
+  const imageModels = getTaskModels("IMAGE_GEN", cfg);
 
   for (const model of imageModels) {
     try {
@@ -56,7 +58,7 @@ export async function generateImage(prompt) {
 
 export async function generateVideo(prompt) {
   const cfg = loadConfig();
-  const videoModels = cfg.models?.video_gen || ["veo-2.0-generate-001"];
+  const videoModels = getTaskModels("VIDEO_GEN", cfg);
 
   for (const model of videoModels) {
     try {
@@ -95,9 +97,9 @@ Reply with ONLY the number (1, 2, or 3).
 User message: "${text}"`;
 
   const cfg = loadConfig();
-  const modelsDefault = cfg.models?.default || ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemma-4-31b"];
+  const classifierModels = getTaskModels("CLASSIFIER", cfg);
 
-  for (const model of modelsDefault) {
+  for (const model of classifierModels) {
     try {
       const reply = await aiProvider.generateText(model, [{ role: "user", parts: [{ text: prompt }] }], { maxOutputTokens: 10, temperature: 0 });
       if (reply.includes("1")) return "SEARCH";
@@ -157,9 +159,9 @@ export async function generateReply(channelId, userText, guildId = null) {
   }
 
   const cfg = loadConfig();
-  const modelsDefault = cfg.models?.default;
-  const modelsSearch = cfg.models?.search;
-  const modelsThinking = cfg.models?.thinking;
+  const modelsDefault = getTaskModels("NORMAL", cfg);
+  const modelsSearch = getTaskModels("SEARCH", cfg);
+  const modelsThinking = getTaskModels("THINKING", cfg);
 
   let modelList = modelsDefault;
   let useSearch = false;
@@ -190,9 +192,11 @@ export async function generateReply(channelId, userText, guildId = null) {
 
         const replyText = await aiProvider.generateText(model, contents, config);
         let finalReplyText = replyText || "hmm, I got nothing 🤔";
-        if (reportedIssue) finalReplyText = reportedIssue + finalReplyText;
+        if (reportedIssue && cfg.show_errors_in_chat !== false) {
+          finalReplyText = reportedIssue + finalReplyText;
+        }
 
-        return finalReplyText;
+        return { text: finalReplyText, model };
       } catch (err) {
         const is429 = err?.message?.includes('"code":429') || err?.message?.includes("RESOURCE_EXHAUSTED") || err?.message?.includes("QUOTA_EXCEEDED") || err?.status === 429;
         if (is429 && attempt < MAX_RETRIES) {
@@ -218,15 +222,11 @@ export async function generateReply(channelId, userText, guildId = null) {
         });
         let finalReplyText = replyText || "hmm, I got nothing 🤔";
 
-        if (reportedIssue) {
-          if (cfg.show_errors_in_chat === false) {
-            finalReplyText = `⚠️ *[Model fallback occurred - check logs]*\n\n` + finalReplyText;
-          } else {
-            finalReplyText = reportedIssue + finalReplyText;
-          }
+        if (reportedIssue && cfg.show_errors_in_chat !== false) {
+          finalReplyText = reportedIssue + finalReplyText;
         }
 
-        return finalReplyText;
+        return { text: finalReplyText, model };
       } catch (err) {
         logger.error(`Fallback default model ${model} failed. Error:`, err.message);
         reportedIssue += `⚠️ *(Auto-Fallback: \`${model}\` failed...)*\n\n`;
@@ -234,7 +234,109 @@ export async function generateReply(channelId, userText, guildId = null) {
     }
   }
 
-  logger.error("[Router] FATAL: All models in all lists exhausted.");
-  if (cfg.show_errors_in_chat === false) return "⚠️ *[All models failed - check logs]* I had an error with all available models. Out of tokens or quota! 🤦‍♂️";
-  return reportedIssue + "I had an error with all available models. Out of tokens or quota! 🤦‍♂️";
+  // ── Donated API Keys Fallback ─────────────────────────────────────────────
+  const donatedKeys = getDonatedApiKeys();
+  if (donatedKeys.length > 0) {
+    logger.log(`[Router] Primary API key failed. Attempting fallback with ${donatedKeys.length} donated key(s)...`);
+    const fallbackModels = [...new Set([...modelList, ...modelsDefault])];
+
+    for (let k = 0; k < donatedKeys.length; k++) {
+      const donatedKey = donatedKeys[k];
+      const tempProvider = createGeminiProvider(donatedKey);
+
+      for (const model of fallbackModels) {
+        try {
+          const config = {
+            systemInstruction: SYSTEM_PROMPT,
+            temperature: taskType === "NORMAL" ? 1.0 : 0.7,
+            maxOutputTokens: taskType === "NORMAL" ? 600 : 1000,
+          };
+          if (useSearch) config.tools = [{ googleSearch: {} }];
+
+          const replyText = await tempProvider.generateText(model, contents, config);
+          let finalReplyText = replyText || "hmm, I got nothing 🤔";
+          logger.log(`[Router] Donated key #${k + 1} succeeded on ${model}`);
+          if (reportedIssue && cfg.show_errors_in_chat !== false) {
+            finalReplyText = reportedIssue + finalReplyText;
+          }
+          return { text: finalReplyText, model };
+        } catch (err) {
+          const is429 = err?.message?.includes('"code":429') || err?.message?.includes("RESOURCE_EXHAUSTED") || err?.message?.includes("QUOTA_EXCEEDED") || err?.status === 429;
+          logger.warn(`[Router] Donated key #${k + 1} failed on ${model}: ${err.message}`);
+          if (is429) {
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  logger.error("[Router] FATAL: All models in all lists and donated keys exhausted.");
+  const fatalMsg = (cfg.show_errors_in_chat === false)
+    ? "⚠️ *[All models failed - check logs]* I had an error with all available models. Out of tokens or quota! 🤦‍♂️"
+    : reportedIssue + "I had an error with all available models. Out of tokens or quota! 🤦‍♂️";
+  return { text: fatalMsg, model: "none" };
+}
+
+/**
+ * Sends the same prompt to multiple models in parallel for side-by-side comparison.
+ * Returns an array of { model, reply, error, durationMs } objects.
+ */
+export async function generateComparisonReply(channelId, userText, guildId = null) {
+  const cfg = loadConfig();
+  const compareModels = resolveModelList(cfg.model_compare?.models || []);
+
+  if (compareModels.length === 0) {
+    return [{ model: "none", reply: null, error: "No comparison models configured.", durationMs: 0 }];
+  }
+
+  const history = getHistory(channelId);
+  const contents = history.map((entry) => {
+    const parts = [{ text: entry.text }];
+    if (entry.attachments && entry.attachments.length > 0) {
+      for (const att of entry.attachments) {
+        try {
+          if (fs.existsSync(att.filepath)) {
+            const buffer = fs.readFileSync(att.filepath);
+            parts.push({
+              inlineData: { data: buffer.toString("base64"), mimeType: att.mimeType }
+            });
+          }
+        } catch (err) {
+          logger.warn(`Failed to read cached attachment ${att.filepath}:`, err.message);
+        }
+      }
+    }
+    return { role: entry.role, parts };
+  });
+
+  const memoryBlock = guildId ? buildMemoryBlock(guildId) : "";
+  const savedImages = getSavedImagesList();
+  const imagesBlock = savedImages.length > 0
+    ? `\n\n--- YOUR SAVED IMAGES ---\nYou currently have these images saved in your library:\n${savedImages.map(f => `- ${f}`).join("\n")}\nYou can send them using [SEND_IMG: name].\n--- END SAVED IMAGES ---`
+    : "\n\n--- YOUR SAVED IMAGES ---\nYour library is empty. You can save images using [SAVE_IMG: url | name].\n--- END SAVED IMAGES ---";
+
+  const SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + memoryBlock + imagesBlock;
+
+  logger.log(`[Compare] Starting comparison across ${compareModels.length} models: ${compareModels.join(", ")}`);
+
+  const promises = compareModels.map(async (model) => {
+    const start = Date.now();
+    try {
+      const replyText = await aiProvider.generateText(model, contents, {
+        systemInstruction: SYSTEM_PROMPT,
+        temperature: 0.7,
+        maxOutputTokens: 800,
+      });
+      const durationMs = Date.now() - start;
+      logger.debug(`[Compare] ${model} responded in ${durationMs}ms`);
+      return { model, reply: replyText || "(empty response)", error: null, durationMs };
+    } catch (err) {
+      const durationMs = Date.now() - start;
+      logger.error(`[Compare] ${model} failed (${durationMs}ms):`, err.message);
+      return { model, reply: null, error: err.message, durationMs };
+    }
+  });
+
+  return Promise.all(promises);
 }
