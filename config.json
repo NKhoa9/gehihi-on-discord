@@ -6,32 +6,39 @@
   "random_appear_rate": 0.2,
   "silence_duration_ms": 200,
   "voice_name": "Aoede",
+  "model_mode": "flash-lite",
   "models": {
+    "classifier": [
+      "flash-lite-series"
+    ],
     "default": [
-      "gemini-3.5-flash-lite",
-      "gemini-3.1-flash-lite",
-      "gemini-2.5-flash-lite",
-      "gemma-4-31b"
+      "flash-lite-series",
+      "flash-series",
+      "gemma-series"
     ],
     "thinking": [
-      "gemini-3.7-flash",
-      "gemini-3.6-flash",
-      "gemini-3.5-flash",
-      "gemini-2.5-flash"
+      "flash-series"
     ],
     "search": [
-      "gemini-3.5-flash-lite",
-      "gemini-3.1-flash-lite",
-      "gemini-2.5-flash-lite",
-      "gemini-3.7-flash",
-      "gemini-3.6-flash",
-      "gemini-3.5-flash",
-      "gemini-2.5-flash"
+      "flash-lite-series",
+      "flash-series"
     ],
     "live": [
-      "models/gemini-3.1-flash-live-preview"
+      "live-series"
     ],
-    "image_gen": [],
-    "video_gen": []
+    "image_gen": [
+      "image-gen-series"
+    ],
+    "video_gen": [
+      "video-gen-series"
+    ]
+  },
+  "model_compare": {
+    "enabled": false,
+    "models": [
+      "gemini-3-flash-preview",
+      "gemini-3.5-flash-lite",
+      "gemini-3.1-flash-lite"
+    ]
   }
 }
