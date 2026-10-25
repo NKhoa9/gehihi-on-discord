@@ -11,7 +11,18 @@ import { getGuildMemories, setGuildMemories, processMemoryTags } from "./src/cor
 import { pushHistory, clearHistory } from "./src/core/history.js";
 import { cacheAttachments } from "./src/media/attachments.js";
 import { getSavedImagesList, getSavedImage, downloadImageToLib, searchGoogleImage } from "./src/media/images.js";
-import { generateImage, generateVideo, generateReply } from "./src/ai/router.js";
+import { generateImage, generateVideo, generateReply, generateComparisonReply } from "./src/ai/router.js";
+import { addKey, removeKey, getAllKeys } from "./src/core/keys.js";
+import {
+  resolveModelList,
+  loadModelRegistry,
+  addModelToSeries,
+  removeModelFromSeries,
+  moveModelInSeries,
+  addModelToTask,
+  removeModelFromTask,
+  moveModelInTask
+} from "./src/ai/models.js";
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 if (!DISCORD_TOKEN) throw new Error("Missing DISCORD_TOKEN in .env");
@@ -76,6 +87,7 @@ const commands = [
           { name: 'random_appear_rate', value: 'random_appear_rate' },
           { name: 'silence_duration_ms', value: 'silence_duration_ms' },
           { name: 'voice_name', value: 'voice_name' },
+          { name: 'model_mode', value: 'model_mode' },
           { name: 'logging', value: 'logging' },
           { name: 'debug_logging', value: 'debug_logging' },
           { name: 'show_errors_in_chat', value: 'show_errors_in_chat' }
@@ -131,6 +143,222 @@ const commands = [
     .setName("logs")
     .setDescription("[Admin] Fetch the latest bot log entries")
     .addIntegerOption(option => option.setName('lines').setDescription('Number of lines to fetch (default 50, max 200)').setRequired(false).setMinValue(1).setMaxValue(200)),
+  new SlashCommandBuilder()
+    .setName("compare")
+    .setDescription("[Admin] Toggle model comparison mode on/off"),
+  new SlashCommandBuilder()
+    .setName("compare_add")
+    .setDescription("[Admin] Add a model to the comparison list")
+    .addStringOption(option => option.setName('model').setDescription('Model name to add (e.g. gemini-3.5-flash-lite)').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("compare_remove")
+    .setDescription("[Admin] Remove a model from the comparison list")
+    .addStringOption(option => option.setName('model').setDescription('Model name to remove').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("compare_models")
+    .setDescription("[Admin] View the current comparison model list and status"),
+  new SlashCommandBuilder()
+    .setName("set_models")
+    .setDescription("[Admin] Set the active model list for a category")
+    .addStringOption(option =>
+      option.setName('category')
+        .setDescription('The category to update')
+        .setRequired(true)
+        .addChoices(
+          { name: 'classifier', value: 'classifier' },
+          { name: 'default', value: 'default' },
+          { name: 'thinking', value: 'thinking' },
+          { name: 'search', value: 'search' },
+          { name: 'live', value: 'live' },
+          { name: 'image_gen', value: 'image_gen' },
+          { name: 'video_gen', value: 'video_gen' }
+        ))
+    .addStringOption(option =>
+      option.setName('models')
+        .setDescription('Comma-separated list of models (e.g. gemini-3.5-flash-lite, gemini-3.1-flash-lite)')
+        .setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("series_add")
+    .setDescription("[Admin] Add a model to a series in models.json")
+    .addStringOption(option =>
+      option.setName('series')
+        .setDescription('The series to add to')
+        .setRequired(true)
+        .addChoices(
+          { name: 'flash-lite-series', value: 'flash-lite-series' },
+          { name: 'flash-series', value: 'flash-series' },
+          { name: 'gemma-series', value: 'gemma-series' },
+          { name: 'live-series', value: 'live-series' },
+          { name: 'image-gen-series', value: 'image-gen-series' },
+          { name: 'video-gen-series', value: 'video-gen-series' }
+        ))
+    .addStringOption(option =>
+      option.setName('model')
+        .setDescription('The model name (e.g. gemini-3.8-flash)')
+        .setRequired(true))
+    .addIntegerOption(option =>
+      option.setName('position')
+        .setDescription('Insert at 1-based position (optional, default: end)')
+        .setRequired(false)
+        .setMinValue(1)),
+  new SlashCommandBuilder()
+    .setName("series_remove")
+    .setDescription("[Admin] Remove a model from a series in models.json")
+    .addStringOption(option =>
+      option.setName('series')
+        .setDescription('The series to remove from')
+        .setRequired(true)
+        .addChoices(
+          { name: 'flash-lite-series', value: 'flash-lite-series' },
+          { name: 'flash-series', value: 'flash-series' },
+          { name: 'gemma-series', value: 'gemma-series' },
+          { name: 'live-series', value: 'live-series' },
+          { name: 'image-gen-series', value: 'image-gen-series' },
+          { name: 'video-gen-series', value: 'video-gen-series' }
+        ))
+    .addStringOption(option =>
+      option.setName('model')
+        .setDescription('The model name to remove')
+        .setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("series_move")
+    .setDescription("[Admin] Move a model's priority (up/down/top/bottom) in a series in models.json")
+    .addStringOption(option =>
+      option.setName('series')
+        .setDescription('The series')
+        .setRequired(true)
+        .addChoices(
+          { name: 'flash-lite-series', value: 'flash-lite-series' },
+          { name: 'flash-series', value: 'flash-series' },
+          { name: 'gemma-series', value: 'gemma-series' },
+          { name: 'live-series', value: 'live-series' },
+          { name: 'image-gen-series', value: 'image-gen-series' },
+          { name: 'video-gen-series', value: 'video-gen-series' }
+        ))
+    .addStringOption(option =>
+      option.setName('model')
+        .setDescription('The model to move')
+        .setRequired(true))
+    .addStringOption(option =>
+      option.setName('direction')
+        .setDescription('Move direction')
+        .setRequired(false)
+        .addChoices(
+          { name: '⬆️ Up (higher priority)', value: 'up' },
+          { name: '⬇️ Down (lower priority)', value: 'down' },
+          { name: '🔝 Top (highest priority)', value: 'top' },
+          { name: '🔚 Bottom (lowest priority)', value: 'bottom' }
+        ))
+    .addIntegerOption(option =>
+      option.setName('position')
+        .setDescription('Or specific target position (1 = first)')
+        .setRequired(false)
+        .setMinValue(1)),
+  new SlashCommandBuilder()
+    .setName("series_list")
+    .setDescription("[Admin] View model series pools in models.json")
+    .addStringOption(option =>
+      option.setName('series')
+        .setDescription('Filter by specific series (optional)')
+        .setRequired(false)
+        .addChoices(
+          { name: 'flash-lite-series', value: 'flash-lite-series' },
+          { name: 'flash-series', value: 'flash-series' },
+          { name: 'gemma-series', value: 'gemma-series' },
+          { name: 'live-series', value: 'live-series' },
+          { name: 'image-gen-series', value: 'image-gen-series' },
+          { name: 'video-gen-series', value: 'video-gen-series' }
+        )),
+  new SlashCommandBuilder()
+    .setName("model_add")
+    .setDescription("[Admin] Add a series or model to a task category in config.json")
+    .addStringOption(option =>
+      option.setName('category')
+        .setDescription('The task category')
+        .setRequired(true)
+        .addChoices(
+          { name: 'classifier', value: 'classifier' },
+          { name: 'default', value: 'default' },
+          { name: 'thinking', value: 'thinking' },
+          { name: 'search', value: 'search' },
+          { name: 'live', value: 'live' },
+          { name: 'image_gen', value: 'image_gen' },
+          { name: 'video_gen', value: 'video_gen' }
+        ))
+    .addStringOption(option =>
+      option.setName('item')
+        .setDescription('Series name (e.g. flash-series) or specific model name')
+        .setRequired(true))
+    .addIntegerOption(option =>
+      option.setName('position')
+        .setDescription('Insert at 1-based position (optional, default: end)')
+        .setRequired(false)
+        .setMinValue(1)),
+  new SlashCommandBuilder()
+    .setName("model_remove")
+    .setDescription("[Admin] Remove a series or model from a task category in config.json")
+    .addStringOption(option =>
+      option.setName('category')
+        .setDescription('The task category')
+        .setRequired(true)
+        .addChoices(
+          { name: 'classifier', value: 'classifier' },
+          { name: 'default', value: 'default' },
+          { name: 'thinking', value: 'thinking' },
+          { name: 'search', value: 'search' },
+          { name: 'live', value: 'live' },
+          { name: 'image_gen', value: 'image_gen' },
+          { name: 'video_gen', value: 'video_gen' }
+        ))
+    .addStringOption(option =>
+      option.setName('item')
+        .setDescription('Series or model name to remove')
+        .setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("model_move")
+    .setDescription("[Admin] Move a series or model's priority (up/down/top/bottom) in config.json")
+    .addStringOption(option =>
+      option.setName('category')
+        .setDescription('The task category')
+        .setRequired(true)
+        .addChoices(
+          { name: 'classifier', value: 'classifier' },
+          { name: 'default', value: 'default' },
+          { name: 'thinking', value: 'thinking' },
+          { name: 'search', value: 'search' },
+          { name: 'live', value: 'live' },
+          { name: 'image_gen', value: 'image_gen' },
+          { name: 'video_gen', value: 'video_gen' }
+        ))
+    .addStringOption(option =>
+      option.setName('item')
+        .setDescription('Series or model to move')
+        .setRequired(true))
+    .addStringOption(option =>
+      option.setName('direction')
+        .setDescription('Move direction')
+        .setRequired(false)
+        .addChoices(
+          { name: '⬆️ Up (higher priority)', value: 'up' },
+          { name: '⬇️ Down (lower priority)', value: 'down' },
+          { name: '🔝 Top (highest priority)', value: 'top' },
+          { name: '🔚 Bottom (lowest priority)', value: 'bottom' }
+        ))
+    .addIntegerOption(option =>
+      option.setName('position')
+        .setDescription('Or specific target position (1 = first)')
+        .setRequired(false)
+        .setMinValue(1)),
+  new SlashCommandBuilder()
+    .setName("donate_key")
+    .setDescription("Donate your Gemini API key to help the bot when rate limits hit")
+    .addStringOption(option =>
+      option.setName('key')
+        .setDescription('Your Gemini API key')
+        .setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("remove_key")
+    .setDescription("Remove your previously donated Gemini API key"),
 ].map((cmd) => cmd.toJSON());
 
 async function registerCommands() {
@@ -290,13 +518,59 @@ client.on("messageCreate", async (message) => {
   try {
     await message.channel.sendTyping();
 
-    const reply = await generateReply(
+    // ── Model Comparison Mode ───────────────────────────────────────────
+    if (cfg.model_compare?.enabled && cfg.model_compare?.models?.length > 0) {
+      logger.log(`[Compare] Comparison mode active — querying ${cfg.model_compare.models.length} models`);
+
+      const results = await generateComparisonReply(
+        message.channel.id,
+        userText,
+        message.guildId
+      );
+
+      // Color palette for embeds so each model is visually distinct
+      const colors = [0x5865F2, 0x57F287, 0xFEE75C, 0xED4245, 0xEB459E, 0x3498DB, 0xE67E22, 0x9B59B6, 0x1ABC9C, 0xE91E63];
+
+      const embeds = results.map((r, i) => {
+        const embed = new EmbedBuilder()
+          .setColor(colors[i % colors.length])
+          .setAuthor({ name: `Model ${i + 1}` })
+          .setTitle(`\`${r.model}\``);
+
+        if (r.error) {
+          embed.setDescription(`❌ **Error:** ${r.error.substring(0, 4000)}`);
+        } else {
+          embed.setDescription(r.reply.substring(0, 4096));
+        }
+
+        embed.setFooter({ text: `⏱ ${r.durationMs}ms` });
+        return embed;
+      });
+
+      // Discord allows max 10 embeds per message; send in batches if needed
+      const replyOpts = { allowedMentions: { repliedUser: false, parse: ['users', 'roles'] } };
+      for (let i = 0; i < embeds.length; i += 10) {
+        const batch = embeds.slice(i, i + 10);
+        if (i === 0) {
+          await message.reply({ ...replyOpts, content: `🔬 **Model Comparison** (${results.length} models)`, embeds: batch });
+        } else {
+          await message.channel.send({ ...replyOpts, embeds: batch });
+        }
+      }
+      return; // Skip normal reply flow
+    }
+    // ── End Comparison Mode ─────────────────────────────────────────────
+
+    const replyResult = await generateReply(
       message.channel.id,
       userText,
       message.guildId
     );
 
-    let finalReply = reply.trim();
+    const replyText = typeof replyResult === "object" ? replyResult.text : replyResult;
+    const modelUsed = typeof replyResult === "object" ? replyResult.model : null;
+
+    let finalReply = (replyText || "").trim();
     logger.log(`\n[Raw AI Response]:\n${finalReply}\n--------------------------`);
 
     if (message.guildId) {
@@ -413,6 +687,8 @@ client.on("messageCreate", async (message) => {
     };
     if (attachments.length > 0) replyOpts.files = attachments;
 
+    const hasModelFootnote = modelUsed && modelUsed !== "none";
+
     if (shouldEmbed) {
       let isParsedJson = false;
       try {
@@ -430,7 +706,14 @@ client.on("messageCreate", async (message) => {
                 if (f.name && f.value) embed.addFields({ name: String(f.name).substring(0, 256), value: String(f.value).substring(0, 1024), inline: !!f.inline });
               }
             }
-            if (embedObj.footer?.text) embed.setFooter({ text: String(embedObj.footer.text).substring(0, 2048) });
+            const footerText = embedObj.footer?.text ? String(embedObj.footer.text).substring(0, 2000) : null;
+            if (footerText && hasModelFootnote) {
+              embed.setFooter({ text: `${footerText} •  ${modelUsed}` });
+            } else if (footerText) {
+              embed.setFooter({ text: footerText });
+            } else if (hasModelFootnote) {
+              embed.setFooter({ text: ` ${modelUsed}` });
+            }
             await message.reply({ ...replyOpts, embeds: [embed] });
             isParsedJson = true;
           }
@@ -442,17 +725,28 @@ client.on("messageCreate", async (message) => {
           const chunks = finalReply.match(/[\s\S]{1,4096}/g) || [finalReply];
           for (let i = 0; i < chunks.length; i++) {
             const embed = new EmbedBuilder().setColor(0x4285F4).setDescription(chunks[i]);
+            if (hasModelFootnote && i === chunks.length - 1) {
+              embed.setFooter({ text: ` ${modelUsed}` });
+            }
             const opts = i === 0 ? { ...replyOpts, embeds: [embed] } : { embeds: [embed], allowedMentions: replyOpts.allowedMentions };
             await message.reply(opts);
           }
         } else {
           const embed = new EmbedBuilder().setColor(0x4285F4).setDescription(finalReply);
+          if (hasModelFootnote) embed.setFooter({ text: ` ${modelUsed}` });
           await message.reply({ ...replyOpts, embeds: [embed] });
         }
       }
     } else {
+      if (hasModelFootnote && finalReply) {
+        finalReply += `\n-#  ${modelUsed}`;
+      }
       if (!finalReply && attachments.length > 0) {
-        await message.reply(replyOpts);
+        if (hasModelFootnote) {
+          await message.reply({ ...replyOpts, content: `-#  ${modelUsed}` });
+        } else {
+          await message.reply(replyOpts);
+        }
       } else if (finalReply.length > 2000) {
         // Chunk long non-embed replies smartly to respect Discord's 2000 char limit
         const chunks = smartSplit(finalReply, 2000);
@@ -499,7 +793,12 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  const adminCommands = ["reset_memory", "pause_ai", "config", "config_check", "add_image", "logs"];
+  const adminCommands = [
+    "reset_memory", "pause_ai", "config", "config_check", "add_image", "logs",
+    "compare", "compare_add", "compare_remove", "compare_models", "set_models",
+    "series_add", "series_remove", "series_move", "series_list",
+    "model_add", "model_remove", "model_move"
+  ];
   if (adminCommands.includes(interaction.commandName)) {
     const adminEnv = process.env.ADMINS || "";
     const admins = adminEnv.split(",").map(id => id.trim()).filter(id => id);
@@ -532,6 +831,12 @@ client.on("interactionCreate", async (interaction) => {
         if (lower === "true" || lower === "on" || lower === "1") newValue = true;
         else if (lower === "false" || lower === "off" || lower === "0") newValue = false;
         else return interaction.reply({ content: "❌ Value must be `true`/`on` or `false`/`off`.", flags: MessageFlags.Ephemeral });
+      } else if (setting === "model_mode") {
+        const lower = valueStr.toLowerCase();
+        if (lower !== "flash" && lower !== "flash-lite") {
+          return interaction.reply({ content: "❌ Value for `model_mode` must be `flash` or `flash-lite`.", flags: MessageFlags.Ephemeral });
+        }
+        newValue = lower;
       }
 
       const currentConfig = loadConfig();
@@ -575,11 +880,14 @@ client.on("interactionCreate", async (interaction) => {
           { name: "🎲 Random Rate", value: `\`${currentConfig.random_appear_rate ?? "N/A"}\``, inline: true },
           { name: "🔇 Silence MS", value: `\`${currentConfig.silence_duration_ms ?? "N/A"}\``, inline: true },
           { name: "🎙️ Voice Name", value: `\`${currentConfig.voice_name ?? "N/A"}\``, inline: true },
+          { name: "⚡ Model Mode", value: `\`${currentConfig.model_mode || "flash-lite"}\``, inline: true },
           { name: "⏸️ AI Paused", value: `\`${isAIPaused ? "YES" : "NO"}\``, inline: true },
         );
 
       const models = currentConfig.models || {};
+      const registry = loadModelRegistry();
       const modelSections = [
+        ["🔍 Classifier Models (always flash-lite)", models.classifier || ["flash-lite-series"]],
         ["🤖 Default Models", models.default],
         ["🔍 Search Models", models.search],
         ["🧠 Thinking Models", models.thinking],
@@ -588,8 +896,28 @@ client.on("interactionCreate", async (interaction) => {
         ["🎬 Video Gen Models", models.video_gen],
       ];
       for (const [label, list] of modelSections) {
-        if (Array.isArray(list) && list.length > 0) embed.addFields({ name: label, value: list.map(m => `\`${m}\``).join("\n"), inline: false });
+        if (Array.isArray(list) && list.length > 0) {
+          const resolved = resolveModelList(list, registry);
+          const rawDisplay = list.map(m => registry[m] ? `📁 \`${m}\`` : `\`${m}\``).join(", ");
+          const resolvedDisplay = resolved.map(m => `\`${m}\``).join(", ");
+          const valueText = (rawDisplay !== resolvedDisplay && list.some(m => registry[m]))
+            ? `${rawDisplay}\n└ *Active: ${resolvedDisplay}*`
+            : resolvedDisplay;
+          embed.addFields({ name: label, value: valueText, inline: false });
+        }
       }
+
+      // Show comparison config
+      const compare = currentConfig.model_compare || { enabled: false, models: [] };
+      const compareStatus = compare.enabled ? "✅ ON" : "❌ OFF";
+      const compareList = compare.models.length > 0 ? compare.models.map(m => `\`${m}\``).join(", ") : "*(none)*";
+      embed.addFields({ name: "🔬 Model Compare", value: `**Status:** ${compareStatus}\n**Models:** ${compareList}`, inline: false });
+
+      const donatedKeysList = getAllKeys();
+      const keysValue = donatedKeysList.length > 0
+        ? `\`${donatedKeysList.length}\` key(s) (${donatedKeysList.map(k => k.username || k.userId).join(", ")})`
+        : "`0` keys";
+      embed.addFields({ name: "🔑 Donated Keys", value: keysValue, inline: false });
 
       const imgCount = getSavedImagesList().length;
       embed.setFooter({ text: `Image library: ${imgCount} image(s) | Config loaded from config.json` });
@@ -619,6 +947,292 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.editReply({ content: `❌ Failed to read log file: ${err.message}` });
       }
     }
+
+    // ── Model Comparison Commands ──────────────────────────────────────────
+    if (interaction.commandName === "compare") {
+      const currentConfig = loadConfig();
+      const compare = currentConfig.model_compare || { enabled: false, models: [] };
+      compare.enabled = !compare.enabled;
+      currentConfig.model_compare = compare;
+      try {
+        fs.writeFileSync("config.json", JSON.stringify(currentConfig, null, 2), "utf-8");
+        const status = compare.enabled ? "✅ **ON**" : "❌ **OFF**";
+        const modelList = compare.models.length > 0 ? compare.models.map(m => `\`${m}\``).join(", ") : "*(none)*";
+        return interaction.reply({
+          content: `🔬 Model comparison mode: ${status}\n📋 Models: ${modelList}`,
+          flags: MessageFlags.Ephemeral
+        });
+      } catch (err) {
+        return interaction.reply({ content: `❌ Failed to save config: ${err.message}`, flags: MessageFlags.Ephemeral });
+      }
+    }
+
+    if (interaction.commandName === "compare_add") {
+      const model = interaction.options.getString('model');
+      const currentConfig = loadConfig();
+      const compare = currentConfig.model_compare || { enabled: false, models: [] };
+      if (compare.models.includes(model)) {
+        return interaction.reply({ content: `⚠️ \`${model}\` is already in the comparison list.`, flags: MessageFlags.Ephemeral });
+      }
+      compare.models.push(model);
+      currentConfig.model_compare = compare;
+      try {
+        fs.writeFileSync("config.json", JSON.stringify(currentConfig, null, 2), "utf-8");
+        return interaction.reply({
+          content: `✅ Added \`${model}\` to comparison list.\n📋 Current models (${compare.models.length}): ${compare.models.map(m => `\`${m}\``).join(", ")}`,
+          flags: MessageFlags.Ephemeral
+        });
+      } catch (err) {
+        return interaction.reply({ content: `❌ Failed to save config: ${err.message}`, flags: MessageFlags.Ephemeral });
+      }
+    }
+
+    if (interaction.commandName === "compare_remove") {
+      const model = interaction.options.getString('model');
+      const currentConfig = loadConfig();
+      const compare = currentConfig.model_compare || { enabled: false, models: [] };
+      const idx = compare.models.indexOf(model);
+      if (idx === -1) {
+        return interaction.reply({ content: `⚠️ \`${model}\` is not in the comparison list.\n📋 Current models: ${compare.models.map(m => `\`${m}\``).join(", ") || "*(none)*"}`, flags: MessageFlags.Ephemeral });
+      }
+      compare.models.splice(idx, 1);
+      currentConfig.model_compare = compare;
+      try {
+        fs.writeFileSync("config.json", JSON.stringify(currentConfig, null, 2), "utf-8");
+        return interaction.reply({
+          content: `🗑️ Removed \`${model}\` from comparison list.\n📋 Current models (${compare.models.length}): ${compare.models.map(m => `\`${m}\``).join(", ") || "*(none)*"}`,
+          flags: MessageFlags.Ephemeral
+        });
+      } catch (err) {
+        return interaction.reply({ content: `❌ Failed to save config: ${err.message}`, flags: MessageFlags.Ephemeral });
+      }
+    }
+
+    if (interaction.commandName === "compare_models") {
+      const currentConfig = loadConfig();
+      const compare = currentConfig.model_compare || { enabled: false, models: [] };
+      const embed = new EmbedBuilder()
+        .setColor(compare.enabled ? 0x57F287 : 0xED4245)
+        .setTitle("🔬 Model Comparison Config")
+        .addFields(
+          { name: "Status", value: compare.enabled ? "✅ Enabled" : "❌ Disabled", inline: true },
+          { name: "Model Count", value: `${compare.models.length}`, inline: true },
+        );
+      if (compare.models.length > 0) {
+        embed.addFields({ name: "Models", value: compare.models.map((m, i) => `**${i + 1}.** \`${m}\``).join("\n"), inline: false });
+      } else {
+        embed.addFields({ name: "Models", value: "*(none configured — use /compare_add)*", inline: false });
+      }
+      embed.setFooter({ text: "Use /compare to toggle • /compare_add & /compare_remove to manage models" });
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    }
+
+    if (interaction.commandName === "set_models") {
+      const category = interaction.options.getString('category');
+      const modelsStr = interaction.options.getString('models');
+      const modelList = modelsStr.split(",").map(m => m.trim()).filter(m => m.length > 0);
+      if (modelList.length === 0) {
+        return interaction.reply({ content: "❌ You must provide at least one valid model name or series.", flags: MessageFlags.Ephemeral });
+      }
+      const currentConfig = loadConfig();
+      if (!currentConfig.models) currentConfig.models = {};
+      currentConfig.models[category] = modelList;
+      try {
+        fs.writeFileSync("config.json", JSON.stringify(currentConfig, null, 2), "utf-8");
+        const resolved = resolveModelList(modelList);
+        const resolvedInfo = (resolved.length > 0 && (resolved.length !== modelList.length || resolved[0] !== modelList[0]))
+          ? `\n\n📋 **Resolved Models (${resolved.length}):**\n${resolved.map(m => `• \`${m}\``).join("\n")}`
+          : "";
+        return interaction.reply({
+          content: `✅ Updated \`${category}\` models:\n${modelList.map(m => `• \`${m}\``).join("\n")}${resolvedInfo}`,
+          flags: MessageFlags.Ephemeral
+        });
+      } catch (err) {
+        return interaction.reply({ content: `❌ Failed to save config: ${err.message}`, flags: MessageFlags.Ephemeral });
+      }
+    }
+
+    // ── Series Management Commands (models.json) ───────────────────────────
+    if (interaction.commandName === "series_add") {
+      const series = interaction.options.getString('series');
+      const model = interaction.options.getString('model').trim();
+      const position = interaction.options.getInteger('position');
+      const res = addModelToSeries(series, model, position);
+      if (!res.success) {
+        if (res.error === "already_exists") {
+          return interaction.reply({ content: `⚠️ \`${model}\` is already in \`${series}\`.\n📋 Current list: ${res.list.map((m, i) => `**${i + 1}.** \`${m}\``).join(", ")}`, flags: MessageFlags.Ephemeral });
+        }
+        return interaction.reply({ content: `❌ Failed to add model: ${res.error}`, flags: MessageFlags.Ephemeral });
+      }
+      return interaction.reply({
+        content: `✅ Added \`${model}\` to series \`${series}\`! (${res.list.length} models)\n${res.list.map((m, i) => `**${i + 1}.** \`${m}\``).join("\n")}`,
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "series_remove") {
+      const series = interaction.options.getString('series');
+      const model = interaction.options.getString('model').trim();
+      const res = removeModelFromSeries(series, model);
+      if (!res.success) {
+        if (res.error === "model_not_found") {
+          return interaction.reply({ content: `⚠️ \`${model}\` is not in \`${series}\`.\n📋 Current list: ${res.list?.map(m => `\`${m}\``).join(", ") || "*(empty)*"}`, flags: MessageFlags.Ephemeral });
+        }
+        return interaction.reply({ content: `❌ Failed to remove model: ${res.error}`, flags: MessageFlags.Ephemeral });
+      }
+      return interaction.reply({
+        content: `🗑️ Removed \`${model}\` from series \`${series}\`.\n📋 Remaining (${res.list.length}):\n${res.list.map((m, i) => `**${i + 1}.** \`${m}\``).join("\n") || "*(empty)*"}`,
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "series_move") {
+      const series = interaction.options.getString('series');
+      const model = interaction.options.getString('model').trim();
+      const direction = interaction.options.getString('direction');
+      const position = interaction.options.getInteger('position');
+
+      if (!direction && !position) {
+        return interaction.reply({ content: "❌ You must specify either `direction` (up/down/top/bottom) or a `position` number.", flags: MessageFlags.Ephemeral });
+      }
+
+      const res = moveModelInSeries(series, model, { direction, position });
+      if (!res.success) {
+        if (res.error === "not_found") {
+          return interaction.reply({ content: `⚠️ \`${model}\` is not in \`${series}\`.\n📋 Current list: ${res.list?.map(m => `\`${m}\``).join(", ") || "*(empty)*"}`, flags: MessageFlags.Ephemeral });
+        }
+        return interaction.reply({ content: `❌ Failed to move model: ${res.error}`, flags: MessageFlags.Ephemeral });
+      }
+
+      if (res.unchanged) {
+        return interaction.reply({ content: `ℹ️ \`${model}\` is already at position **#${res.newIndex + 1}** in \`${series}\`.`, flags: MessageFlags.Ephemeral });
+      }
+
+      return interaction.reply({
+        content: `🔄 Moved \`${model}\` in \`${series}\`: **#${res.oldIndex + 1}** ➔ **#${res.newIndex + 1}**\n\n📋 **New Priority Order:**\n${res.list.map((m, i) => `**${i + 1}.** \`${m}\``).join("\n")}`,
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "series_list") {
+      const targetSeries = interaction.options.getString('series');
+      const registry = loadModelRegistry();
+      const embed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle("📁 Model Series Registry (`models.json`)");
+
+      if (targetSeries) {
+        const list = registry[targetSeries] || [];
+        embed.setDescription(`Showing models in \`${targetSeries}\` (${list.length}):`);
+        if (list.length > 0) {
+          embed.addFields({ name: targetSeries, value: list.map((m, i) => `**${i + 1}.** \`${m}\``).join("\n"), inline: false });
+        } else {
+          embed.addFields({ name: targetSeries, value: "*(empty series)*", inline: false });
+        }
+      } else {
+        const keys = Object.keys(registry);
+        embed.setDescription(`Found **${keys.length}** series in \`models.json\`:`);
+        for (const k of keys) {
+          const list = registry[k] || [];
+          const text = list.length > 0 ? list.map((m, i) => `**${i + 1}.** \`${m}\``).join("\n") : "*(empty)*";
+          embed.addFields({ name: `📁 ${k} (${list.length})`, value: text, inline: false });
+        }
+      }
+      embed.setFooter({ text: "Use /series_add, /series_remove, /series_move to manage series" });
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    }
+
+    // ── Task Models Management Commands (config.json) ──────────────────────
+    if (interaction.commandName === "model_add") {
+      const category = interaction.options.getString('category');
+      const item = interaction.options.getString('item').trim();
+      const position = interaction.options.getInteger('position');
+      const res = addModelToTask(category, item, position);
+      if (!res.success) {
+        if (res.error === "already_exists") {
+          return interaction.reply({ content: `⚠️ \`${item}\` is already in category \`${category}\`.\n📋 Current list: ${res.list.map((m, i) => `**${i + 1}.** \`${m}\``).join(", ")}`, flags: MessageFlags.Ephemeral });
+        }
+        return interaction.reply({ content: `❌ Failed to add to task: ${res.error}`, flags: MessageFlags.Ephemeral });
+      }
+
+      const resolved = resolveModelList(res.list);
+      return interaction.reply({
+        content: `✅ Added \`${item}\` to task \`${category}\`!\n\n📋 **Configured (${res.list.length}):**\n${res.list.map((m, i) => `**${i + 1}.** \`${m}\``).join("\n")}\n\n🔍 **Resolved Models (${resolved.length}):**\n${resolved.map((m, i) => `• \`${m}\``).join("\n")}`,
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "model_remove") {
+      const category = interaction.options.getString('category');
+      const item = interaction.options.getString('item').trim();
+      const res = removeModelFromTask(category, item);
+      if (!res.success) {
+        if (res.error === "item_not_found") {
+          return interaction.reply({ content: `⚠️ \`${item}\` is not in category \`${category}\`.\n📋 Current list: ${res.list?.map(m => `\`${m}\``).join(", ") || "*(empty)*"}`, flags: MessageFlags.Ephemeral });
+        }
+        return interaction.reply({ content: `❌ Failed to remove from task: ${res.error}`, flags: MessageFlags.Ephemeral });
+      }
+
+      const resolved = resolveModelList(res.list);
+      return interaction.reply({
+        content: `🗑️ Removed \`${item}\` from task \`${category}\`.\n\n📋 **Remaining (${res.list.length}):**\n${res.list.map((m, i) => `**${i + 1}.** \`${m}\``).join("\n") || "*(empty)*"}\n\n🔍 **Resolved Models (${resolved.length}):**\n${resolved.map((m, i) => `• \`${m}\``).join("\n") || "*(none)*"}`,
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "model_move") {
+      const category = interaction.options.getString('category');
+      const item = interaction.options.getString('item').trim();
+      const direction = interaction.options.getString('direction');
+      const position = interaction.options.getInteger('position');
+
+      if (!direction && !position) {
+        return interaction.reply({ content: "❌ You must specify either `direction` (up/down/top/bottom) or a `position` number.", flags: MessageFlags.Ephemeral });
+      }
+
+      const res = moveModelInTask(category, item, { direction, position });
+      if (!res.success) {
+        if (res.error === "not_found") {
+          return interaction.reply({ content: `⚠️ \`${item}\` is not in category \`${category}\`.\n📋 Current list: ${res.list?.map(m => `\`${m}\``).join(", ") || "*(empty)*"}`, flags: MessageFlags.Ephemeral });
+        }
+        return interaction.reply({ content: `❌ Failed to move in task: ${res.error}`, flags: MessageFlags.Ephemeral });
+      }
+
+      if (res.unchanged) {
+        return interaction.reply({ content: `ℹ️ \`${item}\` is already at position **#${res.newIndex + 1}** in task \`${category}\`.`, flags: MessageFlags.Ephemeral });
+      }
+
+      const resolved = resolveModelList(res.list);
+      return interaction.reply({
+        content: `🔄 Moved \`${item}\` in task \`${category}\`: **#${res.oldIndex + 1}** ➔ **#${res.newIndex + 1}**\n\n📋 **New Configured Order:**\n${res.list.map((m, i) => `**${i + 1}.** \`${m}\``).join("\n")}\n\n🔍 **Resolved Priority Order:**\n${resolved.map((m, i) => `**${i + 1}.** \`${m}\``).join("\n")}`,
+        flags: MessageFlags.Ephemeral
+      });
+    }
+  }
+
+  // ── Donated API Keys Commands (Public) ───────────────────────────────────
+  if (interaction.commandName === "donate_key") {
+    const key = interaction.options.getString('key').trim();
+    if (!key) {
+      return interaction.reply({ content: "❌ API key cannot be empty.", flags: MessageFlags.Ephemeral });
+    }
+    const result = addKey(interaction.user.id, interaction.user.username, key);
+    return interaction.reply({
+      content: result.updated
+        ? "✅ Your donated Gemini API key has been updated! Thank you for supporting the bot! 🙏"
+        : "✅ Your Gemini API key has been securely saved! Thank you for donating! 🙏",
+      flags: MessageFlags.Ephemeral
+    });
+  }
+
+  if (interaction.commandName === "remove_key") {
+    const removed = removeKey(interaction.user.id);
+    return interaction.reply({
+      content: removed
+        ? "🗑️ Your donated API key has been removed."
+        : "⚠️ You do not have a donated API key registered.",
+      flags: MessageFlags.Ephemeral
+    });
   }
 
   // ── User Image Upload (rate-limited) ─────────────────────────────────────
