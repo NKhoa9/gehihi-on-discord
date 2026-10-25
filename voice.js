@@ -14,6 +14,7 @@ import prism from 'prism-media';
 import ffmpegStatic from 'ffmpeg-static';
 import { PassThrough } from 'stream';
 import fs from 'fs';
+import { getTaskModels } from './src/ai/models.js';
 
 function loadConfig() {
   try {
@@ -29,7 +30,7 @@ export const voiceSessions = new Map();
 
 export async function joinAndStartLive(interaction, logger, modelIndex = 0, isReconnect = false) {
   const config = loadConfig();
-  const MODELS_LIVE = config.models?.live || ['models/gemini-3.1-flash-live-preview'];
+  const MODELS_LIVE = getTaskModels("LIVE", config);
   const SILENCE_DURATION = config.silence_duration_ms ?? 300;
   const VOICE_NAME = config.voice_name || "Aoede";
 

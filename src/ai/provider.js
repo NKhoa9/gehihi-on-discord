@@ -33,3 +33,8 @@ export class GeminiProvider extends AIProvider {
     });
   }
 }
+
+export function createGeminiProvider(apiKey) {
+  return new GeminiProvider(apiKey);
+}
+
