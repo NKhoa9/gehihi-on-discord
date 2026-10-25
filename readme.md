@@ -9,7 +9,7 @@ Supports Discord moderation commands like: ban, kick, timeout, purge, etc...
 
 - This bot acts very close to a real person on Discord, can talk, listen, and understand you. It can also answer your questions, and help you with your tasks.
 - It will always answer when you @mention it, or when you reply to it.
-- It will also randomly appear in text channel. (50/50, maybe lol)
+- It will also randomly appear in text channel.
 - It can react to messages, use embed also.
 
 # discord.js-voice + gemini-live-api (beta)
@@ -38,19 +38,19 @@ npm install
 3. Create a `.env` file in the root directory with the following variables:
 
 ```env
-BOT_TOKEN=YOUR_DISCORD_BOT_TOKEN
-GEMINI_API_KEY=YOUR_GEMINI_API_KEY
-GEMINI_USER_ID=YOUR_GEMINI_USER_ID
-DISCORD_CLIENT_ID=YOUR_DISCORD_CLIENT_ID
-DISCORD_CLIENT_SECRET=YOUR_DISCORD_CLIENT_SECRET
+# ── Required ──────────────────────────────────────────────────────
+DISCORD_TOKEN=your-discord-bot-token-here
+GEMINI_API_KEY=your-gemini-api-key-here
+
+# ── Optional ──────────────────────────────────────────────────────
+ADMINS=your-user-id,another-user-id
+
 ```
 
    Replace the placeholder values with your actual credentials:
-   - `BOT_TOKEN`: Your Discord bot token from the [Discord Developer Portal](https://discord.com/developers/applications)
+   - `DISCORD_TOKEN`: Your Discord bot token from the [Discord Developer Portal](https://discord.com/developers/applications)
    - `GEMINI_API_KEY`: Your Google Gemini API key from the [Google AI Studio](https://aistudio.google.com/app/apikey)
-   - `GEMINI_USER_ID`: Your Gemini User ID (this is different from your API key)
-   - `DISCORD_CLIENT_ID`: Your Discord bot's client ID
-   - `DISCORD_CLIENT_SECRET`: Your Discord bot's client secret
+   - `ADMINS`: Your Discord user ID
 
 4. Run the bot:
 
@@ -83,5 +83,4 @@ On some systems, you may need to install Opus development libraries:
 
 ### API Rate Limits
 Gemini Live has rate limits. If you hit them, you'll see error messages in the console. Consider:
-- Adding a delay between `/join` commands
 - Checking your quota on [Google AI Studio](https://aistudio.google.com/app/quotas)
