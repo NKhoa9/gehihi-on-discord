@@ -7,7 +7,7 @@ import { getSavedImagesList } from "../media/images.js";
 import { buildMemoryBlock } from "../core/memory.js";
 import { AIProvider, GeminiProvider, createGeminiProvider } from "./provider.js";
 import { getDonatedApiKeys } from "../core/keys.js";
-import { getTaskModels, resolveModelList } from "./models.js";
+import { getTaskModels, resolveModelList, loadModelRegistry } from "./models.js";
 
 const LIB_GEN_IMG = path.resolve("lib/gen_img");
 const LIB_GEN_VID = path.resolve("lib/gen_vid");
@@ -145,7 +145,20 @@ export async function generateReply(channelId, userText, guildId = null) {
   let taskType = "NORMAL";
   let cleanedUserText = userText;
 
-  if (/\[SEARCH\]/i.test(userText)) {
+  const cfg = loadConfig();
+  const registry = loadModelRegistry();
+  const allCategories = { ...(cfg.models || {}), ...registry };
+
+  // 1. Check for explicit [CATEGORY: <name>]
+  const explicitCatMatch = userText.match(/\[CATEGORY:\s*([a-zA-Z0-9_\-]+)\]/i);
+  if (explicitCatMatch) {
+    const requestedCat = explicitCatMatch[1].toLowerCase();
+    if (allCategories[requestedCat]) {
+      taskType = requestedCat.toUpperCase();
+      cleanedUserText = userText.replace(/\[CATEGORY:\s*[a-zA-Z0-9_\-]+\]/gi, "").trim() || userText;
+      logger.debug(`[Classifier] User forced custom category: ${requestedCat}`);
+    }
+  } else if (/\[SEARCH\]/i.test(userText)) {
     taskType = "SEARCH";
     cleanedUserText = userText.replace(/\[SEARCH\]/gi, "").trim() || userText;
     logger.debug(`[Classifier] User forced SEARCH mode`);
@@ -153,24 +166,50 @@ export async function generateReply(channelId, userText, guildId = null) {
     taskType = "THINKING";
     cleanedUserText = userText.replace(/\[THINKING\]/gi, "").trim() || userText;
     logger.debug(`[Classifier] User forced THINKING mode`);
-  } else if (cleanedUserText.length > 10) {
-    taskType = await classifyPrompt(cleanedUserText);
-    logger.debug(`[Classifier] Auto-classified as ${taskType}`);
+  } else {
+    // 2. Check if user specified [<CUSTOM_CATEGORY>]
+    let customMatch = null;
+    for (const catName of Object.keys(allCategories)) {
+      if (["default", "search", "thinking", "classifier", "live", "image_gen", "video_gen"].includes(catName)) continue;
+      const regex = new RegExp(`\\[${catName}\\]`, "i");
+      if (regex.test(userText)) {
+        customMatch = catName;
+        cleanedUserText = userText.replace(regex, "").trim() || userText;
+        break;
+      }
+    }
+    if (customMatch) {
+      taskType = customMatch.toUpperCase();
+      logger.debug(`[Classifier] User forced custom category: ${customMatch}`);
+    } else if (cleanedUserText.length > 10) {
+      taskType = await classifyPrompt(cleanedUserText);
+      logger.debug(`[Classifier] Auto-classified as ${taskType}`);
+    }
   }
 
-  const cfg = loadConfig();
-  const modelsDefault = getTaskModels("NORMAL", cfg);
-  const modelsSearch = getTaskModels("SEARCH", cfg);
-  const modelsThinking = getTaskModels("THINKING", cfg);
+  const modelsDefault = getTaskModels("NORMAL", cfg, registry);
+  const modelsSearch = getTaskModels("SEARCH", cfg, registry);
+  const modelsThinking = getTaskModels("THINKING", cfg, registry);
 
   let modelList = modelsDefault;
   let useSearch = false;
 
+  const lowerTask = taskType.toLowerCase();
   if (taskType === "SEARCH") {
     modelList = modelsSearch;
     useSearch = true;
   } else if (taskType === "THINKING") {
     modelList = modelsThinking;
+  } else if (cfg.models?.[lowerTask]) {
+    // Custom task category from config.models
+    modelList = resolveModelList(cfg.models[lowerTask], registry);
+  } else if (registry[lowerTask]) {
+    // Custom series directly from models.json registry
+    modelList = resolveModelList([lowerTask], registry);
+  }
+
+  if (!modelList || modelList.length === 0) {
+    modelList = modelsDefault;
   }
 
   let reportedIssue = "";
@@ -339,4 +378,57 @@ export async function generateComparisonReply(channelId, userText, guildId = nul
   });
 
   return Promise.all(promises);
+}
+
+/**
+ * Generates a one-shot AI reply from a standalone prompt (no conversation history).
+ * Used for greetings, scheduled messages, etc.
+ * @param {string} prompt - The prompt text
+ * @param {string|null} guildId - Optional guild ID for memory context
+ * @returns {Promise<string>} The AI reply text
+ */
+export async function generatePromptReply(prompt, guildId = null) {
+  const cfg = loadConfig();
+  const modelList = getTaskModels("NORMAL", cfg);
+
+  const memoryBlock = guildId ? buildMemoryBlock(guildId) : "";
+  const SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + memoryBlock;
+
+  const contents = [{ role: "user", parts: [{ text: prompt }] }];
+
+  // 1. Try primary key
+  for (const model of modelList) {
+    try {
+      const replyText = await aiProvider.generateText(model, contents, {
+        systemInstruction: SYSTEM_PROMPT,
+        temperature: 1.0,
+        maxOutputTokens: 400,
+      });
+      if (replyText) return replyText;
+    } catch (err) {
+      logger.warn(`[PromptReply] Model ${model} failed:`, err.message);
+    }
+  }
+
+  // 2. Fallback to donated keys
+  const donatedKeys = getDonatedApiKeys();
+  if (donatedKeys.length > 0) {
+    for (let k = 0; k < donatedKeys.length; k++) {
+      const tempProvider = createGeminiProvider(donatedKeys[k]);
+      for (const model of modelList) {
+        try {
+          const replyText = await tempProvider.generateText(model, contents, {
+            systemInstruction: SYSTEM_PROMPT,
+            temperature: 1.0,
+            maxOutputTokens: 400,
+          });
+          if (replyText) return replyText;
+        } catch (err) {
+          logger.warn(`[PromptReply] Donated key #${k + 1} failed on ${model}:`, err.message);
+        }
+      }
+    }
+  }
+
+  return "Welcome! 👋";
 }

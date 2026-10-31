@@ -11,8 +11,10 @@ import { getGuildMemories, setGuildMemories, processMemoryTags } from "./src/cor
 import { pushHistory, clearHistory } from "./src/core/history.js";
 import { cacheAttachments } from "./src/media/attachments.js";
 import { getSavedImagesList, getSavedImage, downloadImageToLib, searchGoogleImage } from "./src/media/images.js";
-import { generateImage, generateVideo, generateReply, generateComparisonReply } from "./src/ai/router.js";
+import { generateImage, generateVideo, generateReply, generateComparisonReply, generatePromptReply } from "./src/ai/router.js";
 import { addKey, removeKey, getAllKeys } from "./src/core/keys.js";
+import { isChannelDisabled, disableChannel, enableChannel, getDisabledChannels } from "./src/core/channel_control.js";
+import { getScheduledTasks, addScheduledTask, removeScheduledTask, toggleScheduledTask, startAllScheduledTasks, scheduleDailyTask, scheduleRandomTask } from "./src/core/scheduler.js";
 import {
   resolveModelList,
   loadModelRegistry,
@@ -21,7 +23,13 @@ import {
   moveModelInSeries,
   addModelToTask,
   removeModelFromTask,
-  moveModelInTask
+  moveModelInTask,
+  createCustomSeries,
+  deleteCustomSeries,
+  createTaskCategory,
+  deleteTaskCategory,
+  getAllSeriesNames,
+  getAllTaskCategories
 } from "./src/ai/models.js";
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
@@ -48,6 +56,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMembers,
   ],
 });
 
@@ -90,9 +99,11 @@ const commands = [
           { name: 'model_mode', value: 'model_mode' },
           { name: 'logging', value: 'logging' },
           { name: 'debug_logging', value: 'debug_logging' },
-          { name: 'show_errors_in_chat', value: 'show_errors_in_chat' }
+          { name: 'show_errors_in_chat', value: 'show_errors_in_chat' },
+          { name: 'greet_new_members', value: 'greet_new_members' },
+          { name: 'greet_channel_id', value: 'greet_channel_id' }
         ))
-    .addStringOption(option => option.setName('value').setDescription('The new value').setRequired(true)),
+    .addStringOption(option => option.setName('value').setDescription('The new value (or "none" to clear)').setRequired(true)),
   new SlashCommandBuilder()
     .setName("config_check")
     .setDescription("[Admin] View the current bot configuration"),
@@ -162,17 +173,9 @@ const commands = [
     .setDescription("[Admin] Set the active model list for a category")
     .addStringOption(option =>
       option.setName('category')
-        .setDescription('The category to update')
+        .setDescription('The category to update (or custom category)')
         .setRequired(true)
-        .addChoices(
-          { name: 'classifier', value: 'classifier' },
-          { name: 'default', value: 'default' },
-          { name: 'thinking', value: 'thinking' },
-          { name: 'search', value: 'search' },
-          { name: 'live', value: 'live' },
-          { name: 'image_gen', value: 'image_gen' },
-          { name: 'video_gen', value: 'video_gen' }
-        ))
+        .setAutocomplete(true))
     .addStringOption(option =>
       option.setName('models')
         .setDescription('Comma-separated list of models (e.g. gemini-3.5-flash-lite, gemini-3.1-flash-lite)')
@@ -182,16 +185,9 @@ const commands = [
     .setDescription("[Admin] Add a model to a series in models.json")
     .addStringOption(option =>
       option.setName('series')
-        .setDescription('The series to add to')
+        .setDescription('The series to add to (e.g. flash-series or custom)')
         .setRequired(true)
-        .addChoices(
-          { name: 'flash-lite-series', value: 'flash-lite-series' },
-          { name: 'flash-series', value: 'flash-series' },
-          { name: 'gemma-series', value: 'gemma-series' },
-          { name: 'live-series', value: 'live-series' },
-          { name: 'image-gen-series', value: 'image-gen-series' },
-          { name: 'video-gen-series', value: 'video-gen-series' }
-        ))
+        .setAutocomplete(true))
     .addStringOption(option =>
       option.setName('model')
         .setDescription('The model name (e.g. gemini-3.8-flash)')
@@ -208,14 +204,7 @@ const commands = [
       option.setName('series')
         .setDescription('The series to remove from')
         .setRequired(true)
-        .addChoices(
-          { name: 'flash-lite-series', value: 'flash-lite-series' },
-          { name: 'flash-series', value: 'flash-series' },
-          { name: 'gemma-series', value: 'gemma-series' },
-          { name: 'live-series', value: 'live-series' },
-          { name: 'image-gen-series', value: 'image-gen-series' },
-          { name: 'video-gen-series', value: 'video-gen-series' }
-        ))
+        .setAutocomplete(true))
     .addStringOption(option =>
       option.setName('model')
         .setDescription('The model name to remove')
@@ -227,14 +216,7 @@ const commands = [
       option.setName('series')
         .setDescription('The series')
         .setRequired(true)
-        .addChoices(
-          { name: 'flash-lite-series', value: 'flash-lite-series' },
-          { name: 'flash-series', value: 'flash-series' },
-          { name: 'gemma-series', value: 'gemma-series' },
-          { name: 'live-series', value: 'live-series' },
-          { name: 'image-gen-series', value: 'image-gen-series' },
-          { name: 'video-gen-series', value: 'video-gen-series' }
-        ))
+        .setAutocomplete(true))
     .addStringOption(option =>
       option.setName('model')
         .setDescription('The model to move')
@@ -261,30 +243,15 @@ const commands = [
       option.setName('series')
         .setDescription('Filter by specific series (optional)')
         .setRequired(false)
-        .addChoices(
-          { name: 'flash-lite-series', value: 'flash-lite-series' },
-          { name: 'flash-series', value: 'flash-series' },
-          { name: 'gemma-series', value: 'gemma-series' },
-          { name: 'live-series', value: 'live-series' },
-          { name: 'image-gen-series', value: 'image-gen-series' },
-          { name: 'video-gen-series', value: 'video-gen-series' }
-        )),
+        .setAutocomplete(true)),
   new SlashCommandBuilder()
     .setName("model_add")
     .setDescription("[Admin] Add a series or model to a task category in config.json")
     .addStringOption(option =>
       option.setName('category')
-        .setDescription('The task category')
+        .setDescription('The task category (built-in or custom)')
         .setRequired(true)
-        .addChoices(
-          { name: 'classifier', value: 'classifier' },
-          { name: 'default', value: 'default' },
-          { name: 'thinking', value: 'thinking' },
-          { name: 'search', value: 'search' },
-          { name: 'live', value: 'live' },
-          { name: 'image_gen', value: 'image_gen' },
-          { name: 'video_gen', value: 'video_gen' }
-        ))
+        .setAutocomplete(true))
     .addStringOption(option =>
       option.setName('item')
         .setDescription('Series name (e.g. flash-series) or specific model name')
@@ -299,17 +266,9 @@ const commands = [
     .setDescription("[Admin] Remove a series or model from a task category in config.json")
     .addStringOption(option =>
       option.setName('category')
-        .setDescription('The task category')
+        .setDescription('The task category (built-in or custom)')
         .setRequired(true)
-        .addChoices(
-          { name: 'classifier', value: 'classifier' },
-          { name: 'default', value: 'default' },
-          { name: 'thinking', value: 'thinking' },
-          { name: 'search', value: 'search' },
-          { name: 'live', value: 'live' },
-          { name: 'image_gen', value: 'image_gen' },
-          { name: 'video_gen', value: 'video_gen' }
-        ))
+        .setAutocomplete(true))
     .addStringOption(option =>
       option.setName('item')
         .setDescription('Series or model name to remove')
@@ -319,17 +278,9 @@ const commands = [
     .setDescription("[Admin] Move a series or model's priority (up/down/top/bottom) in config.json")
     .addStringOption(option =>
       option.setName('category')
-        .setDescription('The task category')
+        .setDescription('The task category (built-in or custom)')
         .setRequired(true)
-        .addChoices(
-          { name: 'classifier', value: 'classifier' },
-          { name: 'default', value: 'default' },
-          { name: 'thinking', value: 'thinking' },
-          { name: 'search', value: 'search' },
-          { name: 'live', value: 'live' },
-          { name: 'image_gen', value: 'image_gen' },
-          { name: 'video_gen', value: 'video_gen' }
-        ))
+        .setAutocomplete(true))
     .addStringOption(option =>
       option.setName('item')
         .setDescription('Series or model to move')
@@ -359,6 +310,60 @@ const commands = [
   new SlashCommandBuilder()
     .setName("remove_key")
     .setDescription("Remove your previously donated Gemini API key"),
+  new SlashCommandBuilder()
+    .setName("disable_ai")
+    .setDescription("[Admin] Disable AI responses in a specific channel")
+    .addChannelOption(option => option.setName('channel').setDescription('The channel to disable AI in (defaults to current)').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName("enable_ai")
+    .setDescription("[Admin] Re-enable AI responses in a previously disabled channel")
+    .addChannelOption(option => option.setName('channel').setDescription('The channel to re-enable AI in (defaults to current)').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName("schedule_add")
+    .setDescription("[Admin] Add a scheduled AI message task")
+    .addChannelOption(option => option.setName('channel').setDescription('Channel to send messages in (defaults to current)').setRequired(false))
+    .addStringOption(option => option.setName('prompt').setDescription('What the AI should talk about').setRequired(false))
+    .addStringOption(option =>
+      option.setName('type')
+        .setDescription('Schedule type')
+        .setRequired(false)
+        .addChoices(
+          { name: 'Random interval', value: 'random' },
+          { name: 'Daily at fixed time', value: 'daily' }
+        ))
+    .addIntegerOption(option => option.setName('interval_min').setDescription('Min minutes between messages (random type, default 60)').setRequired(false).setMinValue(5))
+    .addIntegerOption(option => option.setName('interval_max').setDescription('Max minutes between messages (random type, default 480)').setRequired(false).setMinValue(10))
+    .addIntegerOption(option => option.setName('hour').setDescription('Hour in UTC (daily type, 0-23)').setRequired(false).setMinValue(0).setMaxValue(23))
+    .addIntegerOption(option => option.setName('minute').setDescription('Minute (daily type, 0-59)').setRequired(false).setMinValue(0).setMaxValue(59)),
+  new SlashCommandBuilder()
+    .setName("schedule_remove")
+    .setDescription("[Admin] Remove a scheduled task by ID")
+    .addStringOption(option => option.setName('id').setDescription('Task ID to remove').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("schedule_toggle")
+    .setDescription("[Admin] Enable/disable a scheduled task")
+    .addStringOption(option => option.setName('id').setDescription('Task ID to toggle').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("schedule_list")
+    .setDescription("[Admin] View all scheduled tasks"),
+  new SlashCommandBuilder()
+    .setName("series_create")
+    .setDescription("[Admin] Create a new custom model series in models.json")
+    .addStringOption(option => option.setName('name').setDescription('Series name (e.g. my-custom-series)').setRequired(true))
+    .addStringOption(option => option.setName('models').setDescription('Comma-separated initial models (optional)').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName("series_delete")
+    .setDescription("[Admin] Delete a custom model series from models.json")
+    .addStringOption(option => option.setName('name').setDescription('Series name to delete').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("category_create")
+    .setDescription("[Admin] Create a new custom task category in config.json")
+    .addStringOption(option => option.setName('name').setDescription('Category name (e.g. creative)').setRequired(true))
+    .addStringOption(option => option.setName('items').setDescription('Comma-separated initial series/models (optional)').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName("category_delete")
+    .setDescription("[Admin] Delete a custom task category from config.json")
+    .addStringOption(option => option.setName('name').setDescription('Category name to delete').setRequired(true)),
 ].map((cmd) => cmd.toJSON());
 
 async function registerCommands() {
@@ -455,11 +460,77 @@ function smartSplit(text, maxLength) {
 
 // ── Events ──────────────────────────────────────────────────────────────────
 
+// ── Scheduled Messages Sender ───────────────────────────────────────────────
+
+async function sendScheduledMessage(channelId, guildId, prompt) {
+  try {
+    if (isChannelDisabled(channelId)) {
+      logger.debug(`[Scheduler] Skipping scheduled message in disabled channel ${channelId}`);
+      return;
+    }
+    const channel = await client.channels.fetch(channelId);
+    if (!channel || !channel.isTextBased()) return;
+    const reply = await generatePromptReply(prompt, guildId);
+    if (reply && !reply.includes("[IGNORE]")) {
+      const chunks = smartSplit(reply, 2000);
+      for (const chunk of chunks) {
+        await channel.send({ content: chunk, allowedMentions: { parse: ['users', 'roles'] } });
+      }
+      logger.log(`[Scheduler] Sent scheduled message in ${channelId}`);
+    }
+  } catch (err) {
+    logger.error(`[Scheduler] Failed to send to ${channelId}:`, err.message);
+  }
+}
+
 client.once("ready", async () => {
   logger.log(`🤖 Logged in as ${client.user.tag}`);
   logger.log(`📡 Connected to ${client.guilds.cache.size} server(s)`);
   client.user.setActivity("your RAMs ✨", { type: ActivityType.Playing });
   await registerCommands();
+
+  // Start all enabled scheduled tasks
+  startAllScheduledTasks(sendScheduledMessage);
+});
+
+// ── Greet New Members ───────────────────────────────────────────────────────
+
+client.on("guildMemberAdd", async (member) => {
+  const cfg = loadConfig();
+  if (cfg.greet_new_members === false) return;
+
+  // 1. Check configured greet channel
+  let channel = null;
+  if (cfg.greet_channel_id) {
+    channel = member.guild.channels.cache.get(cfg.greet_channel_id) || await client.channels.fetch(cfg.greet_channel_id).catch(() => null);
+  }
+  // 2. Fall back to system channel
+  if (!channel && member.guild.systemChannel) {
+    channel = member.guild.systemChannel;
+  }
+  // 3. Fall back to first available text channel where bot can send messages
+  if (!channel) {
+    const me = member.guild.members.me || client.user.id;
+    channel = member.guild.channels.cache.find(ch =>
+      ch.isTextBased() &&
+      ch.permissionsFor(me)?.has(PermissionFlagsBits.SendMessages)
+    );
+  }
+  if (!channel) return;
+
+  // Skip if channel is disabled
+  if (isChannelDisabled(channel.id, cfg)) return;
+
+  try {
+    const prompt = `A new member just joined the Discord server! Their name is "${member.displayName}" (username: ${member.user.username}, ID: ${member.id}). The server name is "${member.guild.name}". Write a short, warm, and fun welcome greeting for them. Keep it casual and friendly, 1-3 sentences max. Don't use any control tags.`;
+    const greeting = await generatePromptReply(prompt, member.guild.id);
+    if (greeting) {
+      await channel.send({ content: greeting, allowedMentions: { parse: ['users'] } });
+      logger.log(`[Greet] Welcomed ${member.user.username} in ${member.guild.name}`);
+    }
+  } catch (err) {
+    logger.error(`[Greet] Failed to greet ${member.user.username}:`, err.message);
+  }
 });
 
 let isAIPaused = false;
@@ -492,6 +563,9 @@ client.on("messageCreate", async (message) => {
   pushHistory(message.channel.id, "user", `${historyPrefix}: ${userText}`, cachedAttachments);
 
   if (isAIPaused) return;
+
+  // Check if AI is disabled in this channel
+  if (isChannelDisabled(message.channel.id)) return;
 
   let isMentioned = message.mentions.has(client.user);
   let isReplyToBot = false;
@@ -766,6 +840,25 @@ client.on("messageCreate", async (message) => {
 });
 
 client.on("interactionCreate", async (interaction) => {
+  if (interaction.isAutocomplete()) {
+    try {
+      const focusedOption = interaction.options.getFocused(true);
+      if (focusedOption.name === "series") {
+        const list = getAllSeriesNames();
+        const filtered = list.filter(s => s.toLowerCase().includes(focusedOption.value.toLowerCase())).slice(0, 25);
+        return await interaction.respond(filtered.map(s => ({ name: s, value: s })));
+      }
+      if (focusedOption.name === "category") {
+        const list = getAllTaskCategories();
+        const filtered = list.filter(c => c.toLowerCase().includes(focusedOption.value.toLowerCase())).slice(0, 25);
+        return await interaction.respond(filtered.map(c => ({ name: c, value: c })));
+      }
+    } catch (err) {
+      logger.error("[Autocomplete] Error:", err.message);
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
   logger.log(`[Command] ${interaction.user.tag} used /${interaction.commandName}`);
 
@@ -797,7 +890,10 @@ client.on("interactionCreate", async (interaction) => {
     "reset_memory", "pause_ai", "config", "config_check", "add_image", "logs",
     "compare", "compare_add", "compare_remove", "compare_models", "set_models",
     "series_add", "series_remove", "series_move", "series_list",
-    "model_add", "model_remove", "model_move"
+    "model_add", "model_remove", "model_move",
+    "disable_ai", "enable_ai",
+    "schedule_add", "schedule_remove", "schedule_toggle", "schedule_list",
+    "series_create", "series_delete", "category_create", "category_delete"
   ];
   if (adminCommands.includes(interaction.commandName)) {
     const adminEnv = process.env.ADMINS || "";
@@ -826,11 +922,17 @@ client.on("interactionCreate", async (interaction) => {
       } else if (setting === "random_appear_rate") {
         newValue = parseFloat(valueStr);
         if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid number (e.g. 0.1).", flags: MessageFlags.Ephemeral });
-      } else if (setting === "logging" || setting === "debug_logging" || setting === "show_errors_in_chat") {
+      } else if (setting === "logging" || setting === "debug_logging" || setting === "show_errors_in_chat" || setting === "greet_new_members") {
         const lower = valueStr.toLowerCase();
         if (lower === "true" || lower === "on" || lower === "1") newValue = true;
         else if (lower === "false" || lower === "off" || lower === "0") newValue = false;
         else return interaction.reply({ content: "❌ Value must be `true`/`on` or `false`/`off`.", flags: MessageFlags.Ephemeral });
+      } else if (setting === "greet_channel_id") {
+        if (valueStr.toLowerCase() === "none" || valueStr.toLowerCase() === "clear") {
+          newValue = null;
+        } else {
+          newValue = valueStr.replace(/[<#>]/g, "").trim();
+        }
       } else if (setting === "model_mode") {
         const lower = valueStr.toLowerCase();
         if (lower !== "flash" && lower !== "flash-lite") {
@@ -884,6 +986,10 @@ client.on("interactionCreate", async (interaction) => {
           { name: "⏸️ AI Paused", value: `\`${isAIPaused ? "YES" : "NO"}\``, inline: true },
         );
 
+      const greetStatus = currentConfig.greet_new_members !== false ? "✅ ON" : "❌ OFF";
+      const greetChannel = currentConfig.greet_channel_id ? ` in <#${currentConfig.greet_channel_id}>` : " (system channel)";
+      embed.addFields({ name: "👋 Member Greeting", value: `${greetStatus}${greetChannel}`, inline: true });
+
       const models = currentConfig.models || {};
       const registry = loadModelRegistry();
       const modelSections = [
@@ -906,6 +1012,50 @@ client.on("interactionCreate", async (interaction) => {
           embed.addFields({ name: label, value: valueText, inline: false });
         }
       }
+
+      // Custom task categories in config.models
+      const standardKeys = ["classifier", "default", "search", "thinking", "live", "image_gen", "video_gen"];
+      const customCats = Object.entries(models).filter(([k]) => !standardKeys.includes(k));
+      for (const [catName, list] of customCats) {
+        if (Array.isArray(list) && list.length > 0) {
+          const resolved = resolveModelList(list, registry);
+          const rawDisplay = list.map(m => registry[m] ? `📁 \`${m}\`` : `\`${m}\``).join(", ");
+          const resolvedDisplay = resolved.map(m => `\`${m}\``).join(", ");
+          const valueText = (rawDisplay !== resolvedDisplay && list.some(m => registry[m]))
+            ? `${rawDisplay}\n└ *Active: ${resolvedDisplay}*`
+            : resolvedDisplay;
+          embed.addFields({ name: `✨ Custom Task: [${catName}]`, value: valueText, inline: false });
+        } else {
+          embed.addFields({ name: `✨ Custom Task: [${catName}]`, value: "*(empty)*", inline: false });
+        }
+      }
+
+      // Custom series in models.json
+      const standardSeries = ["flash-lite-series", "flash-series", "gemma-series", "live-series", "image-gen-series", "video-gen-series"];
+      const customSeries = Object.keys(registry).filter(s => !standardSeries.includes(s));
+      if (customSeries.length > 0) {
+        const seriesInfo = customSeries.map(s => {
+          const count = registry[s]?.length || 0;
+          return `• \`${s}\` (${count} model${count !== 1 ? 's' : ''})`;
+        }).join("\n");
+        embed.addFields({ name: "📦 Custom Series Pools", value: seriesInfo, inline: false });
+      }
+
+      // Disabled channels
+      const disabledChs = getDisabledChannels(currentConfig);
+      const disabledChsVal = disabledChs.length > 0
+        ? disabledChs.map(id => `<#${id}>`).join(", ")
+        : "*None (AI active everywhere)*";
+      embed.addFields({ name: "🔇 Disabled Channels", value: disabledChsVal, inline: false });
+
+      // Scheduled tasks
+      const schedTasks = getScheduledTasks(currentConfig);
+      const activeSchedCount = schedTasks.filter(t => t.enabled).length;
+      embed.addFields({
+        name: "⏰ Scheduled Tasks",
+        value: `${schedTasks.length} task(s) (${activeSchedCount} active) — Use \`/schedule_list\` to view`,
+        inline: false
+      });
 
       // Show comparison config
       const compare = currentConfig.model_compare || { enabled: false, models: [] };
@@ -1207,6 +1357,184 @@ client.on("interactionCreate", async (interaction) => {
         content: `🔄 Moved \`${item}\` in task \`${category}\`: **#${res.oldIndex + 1}** ➔ **#${res.newIndex + 1}**\n\n📋 **New Configured Order:**\n${res.list.map((m, i) => `**${i + 1}.** \`${m}\``).join("\n")}\n\n🔍 **Resolved Priority Order:**\n${resolved.map((m, i) => `**${i + 1}.** \`${m}\``).join("\n")}`,
         flags: MessageFlags.Ephemeral
       });
+    }
+    // ── Channel Control Commands ──────────────────────────────────────────
+    if (interaction.commandName === "disable_ai") {
+      const channel = interaction.options.getChannel('channel') || interaction.channel;
+      const res = disableChannel(channel.id);
+      if (res.alreadyDisabled) {
+        return interaction.reply({ content: `ℹ️ AI is already disabled in <#${channel.id}>.`, flags: MessageFlags.Ephemeral });
+      }
+      return interaction.reply({ content: `🔇 AI responses have been **disabled** in <#${channel.id}>.\nUse \`/enable_ai\` to re-enable.`, flags: MessageFlags.Ephemeral });
+    }
+
+    if (interaction.commandName === "enable_ai") {
+      const channel = interaction.options.getChannel('channel') || interaction.channel;
+      const res = enableChannel(channel.id);
+      if (!res.wasDisabled) {
+        return interaction.reply({ content: `ℹ️ AI was not disabled in <#${channel.id}>.`, flags: MessageFlags.Ephemeral });
+      }
+      return interaction.reply({ content: `🔊 AI responses have been **re-enabled** in <#${channel.id}>.`, flags: MessageFlags.Ephemeral });
+    }
+
+    // ── Scheduled Tasks Commands ─────────────────────────────────────────
+    if (interaction.commandName === "schedule_add") {
+      const channel = interaction.options.getChannel('channel') || interaction.channel;
+      const prompt = interaction.options.getString('prompt') || "Send something fun or interesting to the chat";
+      const type = interaction.options.getString('type') || "random";
+      const intervalMin = interaction.options.getInteger('interval_min') || 60;
+      const intervalMax = interaction.options.getInteger('interval_max') || 480;
+      const hour = interaction.options.getInteger('hour');
+      const minute = interaction.options.getInteger('minute') ?? 0;
+
+      if (type === "daily" && hour == null) {
+        return interaction.reply({ content: "❌ Daily schedule requires the `hour` option (0-23 UTC).", flags: MessageFlags.Ephemeral });
+      }
+      if (type === "random" && intervalMin >= intervalMax) {
+        return interaction.reply({ content: "❌ `interval_min` must be less than `interval_max`.", flags: MessageFlags.Ephemeral });
+      }
+
+      const task = addScheduledTask({
+        channelId: channel.id,
+        guildId: interaction.guildId,
+        prompt,
+        type,
+        intervalMin,
+        intervalMax,
+        fixedHour: hour,
+        fixedMinute: minute,
+        createdBy: interaction.user.id,
+      });
+
+      // Start it immediately
+      if (type === "daily") {
+        scheduleDailyTask(task, sendScheduledMessage);
+      } else {
+        scheduleRandomTask(task, sendScheduledMessage);
+      }
+
+      const scheduleInfo = type === "daily"
+        ? `Daily at **${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')} UTC**`
+        : `Random every **${intervalMin}–${intervalMax} min**`;
+
+      return interaction.reply({
+        content: `✅ Scheduled task created!\n🆔 \`${task.id}\`\n📋 Channel: <#${channel.id}>\n⏰ ${scheduleInfo}\n💬 Prompt: *${prompt.substring(0, 100)}${prompt.length > 100 ? '...' : ''}*`,
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "schedule_remove") {
+      const id = interaction.options.getString('id');
+      const res = removeScheduledTask(id);
+      if (!res.success) {
+        return interaction.reply({ content: `❌ Task \`${id}\` not found.`, flags: MessageFlags.Ephemeral });
+      }
+      return interaction.reply({ content: `🗑️ Removed scheduled task \`${id}\`.`, flags: MessageFlags.Ephemeral });
+    }
+
+    if (interaction.commandName === "schedule_toggle") {
+      const id = interaction.options.getString('id');
+      const res = toggleScheduledTask(id);
+      if (!res.success) {
+        return interaction.reply({ content: `❌ Task \`${id}\` not found.`, flags: MessageFlags.Ephemeral });
+      }
+      const status = res.task.enabled ? "▶️ **Enabled**" : "⏸️ **Disabled**";
+
+      // If re-enabled, restart the timer
+      if (res.task.enabled) {
+        if (res.task.type === "daily") {
+          scheduleDailyTask(res.task, sendScheduledMessage);
+        } else {
+          scheduleRandomTask(res.task, sendScheduledMessage);
+        }
+      }
+
+      return interaction.reply({ content: `⏰ Task \`${id}\`: ${status}`, flags: MessageFlags.Ephemeral });
+    }
+
+    if (interaction.commandName === "schedule_list") {
+      const tasks = getScheduledTasks();
+      if (tasks.length === 0) {
+        return interaction.reply({ content: "📋 No scheduled tasks configured.", flags: MessageFlags.Ephemeral });
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle("⏰ Scheduled Tasks")
+        .setDescription(`${tasks.length} task(s) configured`);
+
+      for (const t of tasks.slice(0, 25)) {
+        const status = t.enabled ? "✅" : "⏸️";
+        const schedule = t.type === "daily"
+          ? `Daily at ${String(t.fixed_hour ?? 0).padStart(2, '0')}:${String(t.fixed_minute ?? 0).padStart(2, '0')} UTC`
+          : `Random ${t.interval_min || 60}–${t.interval_max || 480} min`;
+        embed.addFields({
+          name: `${status} \`${t.id}\` — <#${t.channel_id}>`,
+          value: `${schedule}\n💬 *${(t.prompt || "").substring(0, 80)}${(t.prompt || "").length > 80 ? "..." : ""}*`,
+          inline: false
+        });
+      }
+      embed.setFooter({ text: "Use /schedule_add, /schedule_remove, /schedule_toggle" });
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    }
+
+    // ── Custom Series & Category Commands ────────────────────────────────
+    if (interaction.commandName === "series_create") {
+      const name = interaction.options.getString('name');
+      const modelsStr = interaction.options.getString('models');
+      const initialModels = modelsStr ? modelsStr.split(",").map(m => m.trim()).filter(Boolean) : [];
+      const res = createCustomSeries(name, initialModels);
+      if (!res.success) {
+        if (res.error === "already_exists") {
+          return interaction.reply({ content: `⚠️ Series \`${name}\` already exists.`, flags: MessageFlags.Ephemeral });
+        }
+        return interaction.reply({ content: `❌ Failed: ${res.error}`, flags: MessageFlags.Ephemeral });
+      }
+      const listStr = res.list.length > 0 ? res.list.map(m => `\`${m}\``).join(", ") : "*(empty)*";
+      return interaction.reply({
+        content: `✅ Created series \`${res.name}\`!\n📋 Models: ${listStr}\n\nYou can now use it in task categories with \`/model_add\`, or trigger it in chat with \`[${res.name}]\`.`,
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "series_delete") {
+      const name = interaction.options.getString('name');
+      const res = deleteCustomSeries(name);
+      if (!res.success) {
+        return interaction.reply({ content: `❌ Series \`${name}\` not found.`, flags: MessageFlags.Ephemeral });
+      }
+      return interaction.reply({ content: `🗑️ Deleted series \`${res.name}\`.`, flags: MessageFlags.Ephemeral });
+    }
+
+    if (interaction.commandName === "category_create") {
+      const name = interaction.options.getString('name');
+      const itemsStr = interaction.options.getString('items');
+      const initialItems = itemsStr ? itemsStr.split(",").map(i => i.trim()).filter(Boolean) : [];
+      const res = createTaskCategory(name, initialItems);
+      if (!res.success) {
+        if (res.error === "already_exists") {
+          return interaction.reply({ content: `⚠️ Category \`${name}\` already exists.`, flags: MessageFlags.Ephemeral });
+        }
+        return interaction.reply({ content: `❌ Failed: ${res.error}`, flags: MessageFlags.Ephemeral });
+      }
+      const listStr = res.list.length > 0 ? res.list.map(i => `\`${i}\``).join(", ") : "*(empty)*";
+      return interaction.reply({
+        content: `✅ Created task category \`${res.name}\`!\n📋 Items: ${listStr}\n\nYou can trigger it in chat with \`[CATEGORY: ${res.name}]\` or \`[${res.name}]\`.\nUse \`/model_add\` to add series/models to it.`,
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "category_delete") {
+      const name = interaction.options.getString('name');
+      const protected_cats = ["default", "classifier", "search", "thinking", "live", "image_gen", "video_gen"];
+      if (protected_cats.includes(name.toLowerCase())) {
+        return interaction.reply({ content: `❌ Cannot delete built-in category \`${name}\`.`, flags: MessageFlags.Ephemeral });
+      }
+      const res = deleteTaskCategory(name);
+      if (!res.success) {
+        return interaction.reply({ content: `❌ Category \`${name}\` not found.`, flags: MessageFlags.Ephemeral });
+      }
+      return interaction.reply({ content: `🗑️ Deleted task category \`${res.name}\`.`, flags: MessageFlags.Ephemeral });
     }
   }
 
