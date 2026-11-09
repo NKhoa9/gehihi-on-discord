@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { Client, GatewayIntentBits, ActivityType, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, MessageFlags, AttachmentBuilder, Collection } from "discord.js";
+import { Client, GatewayIntentBits, Partials, ActivityType, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, MessageFlags, AttachmentBuilder, Collection } from "discord.js";
 import fs from "fs";
 import path from "path";
 import { joinAndStartLive, leaveLive } from "./voice.js";
@@ -7,8 +7,10 @@ import { joinAndStartLive, leaveLive } from "./voice.js";
 // -- New Modular Imports --
 import { logger } from "./src/utils/logger.js";
 import { loadConfig } from "./src/utils/config.js";
-import { getGuildMemories, setGuildMemories, processMemoryTags } from "./src/core/memory.js";
-import { pushHistory, clearHistory } from "./src/core/history.js";
+import { getGuildMemories, setGuildMemories, getUniversalMemories, setUniversalMemories, processMemoryTags } from "./src/core/memory.js";
+import { resolveGuildEmojis, resolveReactEmoji } from "./src/core/emojis.js";
+import { shouldRespond, recordBotReply } from "./src/core/trigger.js";
+import { pushHistory, clearHistory, updateHistoryReactions, getHistory } from "./src/core/history.js";
 import { cacheAttachments } from "./src/media/attachments.js";
 import { getSavedImagesList, getSavedImage, downloadImageToLib, searchGoogleImage } from "./src/media/images.js";
 import { generateImage, generateVideo, generateReply, generateComparisonReply, generatePromptReply } from "./src/ai/router.js";
@@ -57,6 +59,13 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildExpressions,
+  ],
+  partials: [
+    Partials.Message,
+    Partials.Channel,
+    Partials.Reaction,
   ],
 });
 
@@ -77,10 +86,30 @@ const commands = [
     .setDescription("Check if the bot is alive"),
   new SlashCommandBuilder()
     .setName("memories")
-    .setDescription("View the bot's saved memories for this server"),
+    .setDescription("View the bot's saved memories")
+    .addStringOption(option =>
+      option.setName("scope")
+        .setDescription("Which memories to view (all, universal, server)")
+        .setRequired(false)
+        .addChoices(
+          { name: "all (universal + server)", value: "all" },
+          { name: "universal (facts & skills)", value: "universal" },
+          { name: "server (context & lore)", value: "server" }
+        )
+    ),
   new SlashCommandBuilder()
     .setName("reset_memory")
-    .setDescription("[Admin] Completely erase the AI's saved memories for this server"),
+    .setDescription("[Admin] Completely erase AI memories")
+    .addStringOption(option =>
+      option.setName("scope")
+        .setDescription("Which memories to erase (server, universal, all)")
+        .setRequired(false)
+        .addChoices(
+          { name: "server (this server only)", value: "server" },
+          { name: "universal (global facts & skills)", value: "universal" },
+          { name: "all (both server & universal)", value: "all" }
+        )
+    ),
   new SlashCommandBuilder()
     .setName("pause_ai")
     .setDescription("[Admin] Pause or unpause the AI from responding in text channels"),
@@ -92,6 +121,7 @@ const commands = [
         .setDescription('The setting to change')
         .setRequired(true)
         .addChoices(
+          { name: 'response_mode', value: 'response_mode' },
           { name: 'max_history', value: 'max_history' },
           { name: 'random_appear_rate', value: 'random_appear_rate' },
           { name: 'silence_duration_ms', value: 'silence_duration_ms' },
@@ -489,6 +519,15 @@ client.once("ready", async () => {
   client.user.setActivity("your RAMs ✨", { type: ActivityType.Playing });
   await registerCommands();
 
+  // Pre-fetch custom emojis for all connected guilds
+  for (const guild of client.guilds.cache.values()) {
+    try {
+      await guild.emojis.fetch();
+    } catch (err) {
+      logger.warn(`[Emojis] Failed to fetch emojis for guild ${guild.name}:`, err.message);
+    }
+  }
+
   // Start all enabled scheduled tasks
   startAllScheduledTasks(sendScheduledMessage);
 });
@@ -523,7 +562,7 @@ client.on("guildMemberAdd", async (member) => {
 
   try {
     const prompt = `A new member just joined the Discord server! Their name is "${member.displayName}" (username: ${member.user.username}, ID: ${member.id}). The server name is "${member.guild.name}". Write a short, warm, and fun welcome greeting for them. Keep it casual and friendly, 1-3 sentences max. Don't use any control tags.`;
-    const greeting = await generatePromptReply(prompt, member.guild.id);
+    const greeting = await generatePromptReply(prompt, member.guild.id, member.guild);
     if (greeting) {
       await channel.send({ content: greeting, allowedMentions: { parse: ['users'] } });
       logger.log(`[Greet] Welcomed ${member.user.username} in ${member.guild.name}`);
@@ -537,6 +576,10 @@ let isAIPaused = false;
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
+
+  if (message.guild && message.guild.emojis.cache.size === 0) {
+    await message.guild.emojis.fetch().catch(() => {});
+  }
 
   const userText = cleanContent(message);
   const userName = message.author.displayName || message.author.username;
@@ -552,7 +595,17 @@ client.on("messageCreate", async (message) => {
       const replyAuthorId = repliedMsg.author.id;
       let replyContent = (repliedMsg.content || "").substring(0, 100);
       replyContent = replyContent.replace(/<a?:(\w+):\d+>/g, ':$1:');
-      historyPrefix += ` [replying to ${replyAuthor} (ID: ${replyAuthorId}): "${replyContent}"]`;
+
+      let repliedRx = "";
+      if (repliedMsg.reactions?.cache?.size > 0) {
+        const rxList = [];
+        for (const [, rx] of repliedMsg.reactions.cache) {
+          const emojiStr = rx.emoji.id ? `<${rx.emoji.animated ? "a" : ""}:${rx.emoji.name}:${rx.emoji.id}>` : rx.emoji.name;
+          rxList.push(`${emojiStr} x${rx.count}`);
+        }
+        if (rxList.length > 0) repliedRx = ` [reactions: ${rxList.join(", ")}]`;
+      }
+      historyPrefix += ` [replying to ${replyAuthor} (ID: ${replyAuthorId})${repliedRx}: "${replyContent}"]`;
     } catch { }
   }
 
@@ -560,7 +613,15 @@ client.on("messageCreate", async (message) => {
     ? await cacheAttachments(message.attachments)
     : [];
 
-  pushHistory(message.channel.id, "user", `${historyPrefix}: ${userText}`, cachedAttachments);
+  // Collect existing reactions on the message (usually empty for new messages)
+  const initialReactions = [];
+  if (message.reactions?.cache?.size > 0) {
+    for (const [, rx] of message.reactions.cache) {
+      const emojiStr = rx.emoji.id ? `<${rx.emoji.animated ? "a" : ""}:${rx.emoji.name}:${rx.emoji.id}>` : rx.emoji.name;
+      initialReactions.push({ emoji: emojiStr, count: rx.count });
+    }
+  }
+  pushHistory(message.channel.id, "user", `${historyPrefix}: ${userText}`, cachedAttachments, message.id, initialReactions);
 
   if (isAIPaused) return;
 
@@ -580,17 +641,38 @@ client.on("messageCreate", async (message) => {
   }
 
   const cfg = loadConfig();
-  const randomRate = cfg.random_appear_rate ?? 0.05;
-  const shouldProcess = isMentioned || isReplyToBot || Math.random() < randomRate;
+  const decision = shouldRespond({
+    message,
+    client,
+    cfg,
+    userText,
+    isMentioned,
+    isReplyToBot
+  });
 
-  if (!shouldProcess) {
-    logger.debug(`[Ignore] Random dice failed or not mentioned. userName: ${userName}`);
+  if (!decision.shouldProcess) {
+    logger.debug(`[Ignore] Trigger check not passed (${decision.reason}, mode: ${decision.mode}). userName: ${userName}`);
     return;
   }
 
   logger.debug(`[Process] Starting generation for message from ${userName}`);
   try {
     await message.channel.sendTyping();
+
+    // Sync latest reactions for messages in this channel's history from Discord cache
+    for (const entry of getHistory(message.channel.id)) {
+      if (entry.messageId) {
+        const cached = message.channel.messages.cache.get(entry.messageId);
+        if (cached && cached.reactions?.cache?.size > 0) {
+          const rxList = [];
+          for (const [, rx] of cached.reactions.cache) {
+            const emojiStr = rx.emoji.id ? `<${rx.emoji.animated ? "a" : ""}:${rx.emoji.name}:${rx.emoji.id}>` : rx.emoji.name;
+            rxList.push({ emoji: emojiStr, count: rx.count });
+          }
+          entry.reactions = rxList;
+        }
+      }
+    }
 
     // ── Model Comparison Mode ───────────────────────────────────────────
     if (cfg.model_compare?.enabled && cfg.model_compare?.models?.length > 0) {
@@ -599,7 +681,8 @@ client.on("messageCreate", async (message) => {
       const results = await generateComparisonReply(
         message.channel.id,
         userText,
-        message.guildId
+        message.guildId,
+        message.guild
       );
 
       // Color palette for embeds so each model is visually distinct
@@ -631,6 +714,7 @@ client.on("messageCreate", async (message) => {
           await message.channel.send({ ...replyOpts, embeds: batch });
         }
       }
+      recordBotReply(message.channel.id);
       return; // Skip normal reply flow
     }
     // ── End Comparison Mode ─────────────────────────────────────────────
@@ -638,7 +722,8 @@ client.on("messageCreate", async (message) => {
     const replyResult = await generateReply(
       message.channel.id,
       userText,
-      message.guildId
+      message.guildId,
+      message.guild
     );
 
     const replyText = typeof replyResult === "object" ? replyResult.text : replyResult;
@@ -647,9 +732,7 @@ client.on("messageCreate", async (message) => {
     let finalReply = (replyText || "").trim();
     logger.log(`\n[Raw AI Response]:\n${finalReply}\n--------------------------`);
 
-    if (message.guildId) {
-      finalReply = processMemoryTags(finalReply, message.guildId);
-    }
+    finalReply = processMemoryTags(finalReply, message.guildId);
 
     logger.log(`[Response] to ${userName} in ${message.channel.id}: ${finalReply}`);
 
@@ -657,10 +740,24 @@ client.on("messageCreate", async (message) => {
 
     const reactMatch = finalReply.match(/\[REACT:\s*(.+?)\]/);
     if (reactMatch) {
-      const emoji = reactMatch[1].trim();
-      try { await message.react(emoji); } catch (err) { logger.error("Failed to react:", emoji); }
+      const rawEmoji = reactMatch[1].trim();
+      const emojiToReact = resolveReactEmoji(rawEmoji, message.guild);
+      if (emojiToReact) {
+        try {
+          await message.react(emojiToReact);
+        } catch (err) {
+          logger.error(`Failed to react with "${rawEmoji}":`, err.message);
+        }
+      }
       finalReply = finalReply.replace(/\[REACT:\s*.+?\]/gi, "").trim();
-      if (!finalReply) return;
+      if (!finalReply) {
+        recordBotReply(message.channel.id);
+        return;
+      }
+    }
+
+    if (message.guild) {
+      finalReply = resolveGuildEmojis(finalReply, message.guild);
     }
 
     const attachments = [];
@@ -754,7 +851,8 @@ client.on("messageCreate", async (message) => {
     finalReply = finalReply.replace(/\n\s*\n/g, "\n\n").trim();
 
     // Task 4: Push the PROCESSED reply to history (after all tag stripping)
-    pushHistory(message.channel.id, "model", finalReply);
+    pushHistory(message.channel.id, "model", finalReply, [], null, []);
+    recordBotReply(message.channel.id);
 
     const replyOpts = {
       allowedMentions: { repliedUser: false, parse: ['users', 'roles'] },
@@ -763,6 +861,7 @@ client.on("messageCreate", async (message) => {
 
     const hasModelFootnote = modelUsed && modelUsed !== "none";
 
+    let sentMsg = null;
     if (shouldEmbed) {
       let isParsedJson = false;
       try {
@@ -788,7 +887,7 @@ client.on("messageCreate", async (message) => {
             } else if (hasModelFootnote) {
               embed.setFooter({ text: ` ${modelUsed}` });
             }
-            await message.reply({ ...replyOpts, embeds: [embed] });
+            sentMsg = await message.reply({ ...replyOpts, embeds: [embed] });
             isParsedJson = true;
           }
         }
@@ -803,12 +902,13 @@ client.on("messageCreate", async (message) => {
               embed.setFooter({ text: ` ${modelUsed}` });
             }
             const opts = i === 0 ? { ...replyOpts, embeds: [embed] } : { embeds: [embed], allowedMentions: replyOpts.allowedMentions };
-            await message.reply(opts);
+            const m = await message.reply(opts);
+            if (!sentMsg) sentMsg = m;
           }
         } else {
           const embed = new EmbedBuilder().setColor(0x4285F4).setDescription(finalReply);
           if (hasModelFootnote) embed.setFooter({ text: ` ${modelUsed}` });
-          await message.reply({ ...replyOpts, embeds: [embed] });
+          sentMsg = await message.reply({ ...replyOpts, embeds: [embed] });
         }
       }
     } else {
@@ -817,9 +917,9 @@ client.on("messageCreate", async (message) => {
       }
       if (!finalReply && attachments.length > 0) {
         if (hasModelFootnote) {
-          await message.reply({ ...replyOpts, content: `-#  ${modelUsed}` });
+          sentMsg = await message.reply({ ...replyOpts, content: `-#  ${modelUsed}` });
         } else {
-          await message.reply(replyOpts);
+          sentMsg = await message.reply(replyOpts);
         }
       } else if (finalReply.length > 2000) {
         // Chunk long non-embed replies smartly to respect Discord's 2000 char limit
@@ -828,16 +928,53 @@ client.on("messageCreate", async (message) => {
           const opts = i === 0
             ? { ...replyOpts, content: chunks[i] }
             : { content: chunks[i], allowedMentions: replyOpts.allowedMentions };
-          await message.reply(opts);
+          const m = await message.reply(opts);
+          if (!sentMsg) sentMsg = m;
         }
       } else {
-        await message.reply({ ...replyOpts, content: finalReply });
+        sentMsg = await message.reply({ ...replyOpts, content: finalReply });
       }
+    }
+
+    if (sentMsg?.id) {
+      const hist = getHistory(message.channel.id);
+      const lastModel = [...hist].reverse().find(e => e.role === "model" && !e.messageId);
+      if (lastModel) lastModel.messageId = sentMsg.id;
     }
   } catch (err) {
     logger.error("Error handling message:", err);
   }
 });
+
+// ── Reaction Tracking ──────────────────────────────────────────────────────
+
+async function handleReactionUpdate(reaction) {
+  try {
+    // Partials: ensure the reaction and message are fully loaded
+    if (reaction.partial) await reaction.fetch();
+    if (reaction.message.partial) await reaction.message.fetch();
+
+    const msg = reaction.message;
+    const channelId = msg.channel.id;
+    const messageId = msg.id;
+
+    // Build the full reactions list from the message's current reaction cache
+    const reactions = [];
+    for (const [, rx] of msg.reactions.cache) {
+      const emojiStr = rx.emoji.id
+        ? `<${rx.emoji.animated ? "a" : ""}:${rx.emoji.name}:${rx.emoji.id}>`
+        : rx.emoji.name;
+      reactions.push({ emoji: emojiStr, count: rx.count });
+    }
+
+    updateHistoryReactions(channelId, messageId, reactions);
+  } catch (err) {
+    logger.debug("[Reactions] Failed to update reaction in history:", err.message);
+  }
+}
+
+client.on("messageReactionAdd", handleReactionUpdate);
+client.on("messageReactionRemove", handleReactionUpdate);
 
 client.on("interactionCreate", async (interaction) => {
   if (interaction.isAutocomplete()) {
@@ -876,14 +1013,44 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.commandName === "memories") {
-    const memories = getGuildMemories(interaction.guildId);
-    if (memories.length === 0) {
-      await interaction.reply({ content: "🧠 No memories saved for this server yet!", flags: MessageFlags.Ephemeral });
-    } else {
-      const lines = memories.map((m, i) => `**#${i + 1}**: ${m.text}`).join("\n");
-      const embed = new EmbedBuilder().setColor(0x9B59B6).setTitle("🧠 Bot Memories").setDescription(lines.substring(0, 4096)).setFooter({ text: `${memories.length} memory(s) saved` });
-      await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    const scope = interaction.options.getString("scope") || "all";
+    const universalMemories = (scope === "all" || scope === "universal") ? getUniversalMemories() : [];
+    const serverMemories = (scope === "all" || scope === "server") ? (interaction.guildId ? getGuildMemories(interaction.guildId) : []) : [];
+
+    if (universalMemories.length === 0 && serverMemories.length === 0) {
+      const emptyMsg = scope === "universal"
+        ? "🧠 No universal memories saved yet!"
+        : scope === "server"
+          ? "🧠 No server memories saved for this server yet!"
+          : "🧠 No memories saved yet!";
+      return interaction.reply({ content: emptyMsg, flags: MessageFlags.Ephemeral });
     }
+
+    const embed = new EmbedBuilder()
+      .setColor(0x9B59B6)
+      .setTitle("🧠 AI Memories");
+
+    if (universalMemories.length > 0) {
+      const uLines = universalMemories.map((m, i) => `**#${i + 1}** \`[${m.id || 'N/A'}]\`: ${m.text}`).join("\n");
+      embed.addFields({
+        name: `🌐 Universal Facts & Skills (${universalMemories.length})`,
+        value: uLines.length > 1024 ? uLines.substring(0, 1020) + "..." : uLines,
+        inline: false
+      });
+    }
+
+    if (serverMemories.length > 0) {
+      const sLines = serverMemories.map((m, i) => `**#${i + 1}** \`[${m.id || 'N/A'}]\`: ${m.text}`).join("\n");
+      embed.addFields({
+        name: `🏰 Server Context & Lore (${serverMemories.length})`,
+        value: sLines.length > 1024 ? sLines.substring(0, 1020) + "..." : sLines,
+        inline: false
+      });
+    }
+
+    const totalCount = universalMemories.length + serverMemories.length;
+    embed.setFooter({ text: `${totalCount} memory item(s) • Scope: ${scope}` });
+    return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   }
 
   const adminCommands = [
@@ -903,8 +1070,18 @@ client.on("interactionCreate", async (interaction) => {
     if (!admins.includes(interaction.user.id)) return interaction.reply({ content: "❌ You are not on the bot's admin whitelist.", flags: MessageFlags.Ephemeral });
 
     if (interaction.commandName === "reset_memory") {
-      setGuildMemories(interaction.guildId, []);
-      return interaction.reply({ content: "🧠 All AI memories for this server have been completely wiped by an admin." });
+      const scope = interaction.options.getString("scope") || "server";
+      if (scope === "universal") {
+        setUniversalMemories([]);
+        return interaction.reply({ content: "🧠 All Universal AI memories (facts & skills) have been completely wiped by an admin." });
+      } else if (scope === "all") {
+        if (interaction.guildId) setGuildMemories(interaction.guildId, []);
+        setUniversalMemories([]);
+        return interaction.reply({ content: "🧠 All Server and Universal AI memories have been completely wiped by an admin." });
+      } else {
+        if (interaction.guildId) setGuildMemories(interaction.guildId, []);
+        return interaction.reply({ content: "🧠 All AI memories for this server have been completely wiped by an admin." });
+      }
     }
 
     if (interaction.commandName === "pause_ai") {
@@ -919,6 +1096,12 @@ client.on("interactionCreate", async (interaction) => {
       if (setting === "max_history" || setting === "silence_duration_ms") {
         newValue = parseInt(valueStr, 10);
         if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid integer.", flags: MessageFlags.Ephemeral });
+      } else if (setting === "response_mode") {
+        const lower = valueStr.toLowerCase();
+        if (lower !== "smart" && lower !== "random") {
+          return interaction.reply({ content: "❌ Value for `response_mode` must be `smart` or `random`.", flags: MessageFlags.Ephemeral });
+        }
+        newValue = lower;
       } else if (setting === "random_appear_rate") {
         newValue = parseFloat(valueStr);
         if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid number (e.g. 0.1).", flags: MessageFlags.Ephemeral });
@@ -979,6 +1162,7 @@ client.on("interactionCreate", async (interaction) => {
           { name: "🐛 Debug Logs", value: `\`${currentConfig.debug_logging ? "ON" : "OFF"}\``, inline: true },
           { name: "⚠️ Chat Errors", value: `\`${currentConfig.show_errors_in_chat ? "SHOW" : "HIDE"}\``, inline: true },
           { name: "📜 Max History", value: `\`${currentConfig.max_history ?? "N/A"}\``, inline: true },
+          { name: "🎯 Trigger Mode", value: `\`${currentConfig.response_mode || "smart"}\``, inline: true },
           { name: "🎲 Random Rate", value: `\`${currentConfig.random_appear_rate ?? "N/A"}\``, inline: true },
           { name: "🔇 Silence MS", value: `\`${currentConfig.silence_duration_ms ?? "N/A"}\``, inline: true },
           { name: "🎙️ Voice Name", value: `\`${currentConfig.voice_name ?? "N/A"}\``, inline: true },

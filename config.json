@@ -3,6 +3,7 @@
   "debug_logging": true,
   "show_errors_in_chat": false,
   "max_history": 30,
+  "response_mode": "smart",
   "random_appear_rate": 0.2,
   "silence_duration_ms": 200,
   "voice_name": "Aoede",
