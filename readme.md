@@ -1,6 +1,6 @@
 A random Discord bot created by a random person with the help of AIs (yeah)
 
-Join my server to chat with the bot: https://discord.gg/CM6CSpCzXu
+Join my server to chat with the bot: https://discord.gg/cqjdsNnApw
 
 # A multi-purpose bot
 Supports Discord moderation commands like: ban, kick, timeout, purge, etc...
