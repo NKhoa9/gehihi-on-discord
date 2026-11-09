@@ -1,4 +1,4 @@
-A random bon-bot created by a random person with the help of AIs (yeah)
+A random Discord bot created by a random person with the help of AIs (yeah)
 
 Join my server to chat with the bot: https://discord.gg/CM6CSpCzXu
 
@@ -11,15 +11,7 @@ Supports Discord moderation commands like: ban, kick, timeout, purge, etc...
 - It will always answer when you @mention it, or when you reply to it.
 - It will also randomly appear in text channel.
 - It can react to messages, use embed also.
-
-# discord.js-voice + gemini-live-api (beta)
-
-A Discord bot that uses `discord.js-voice` to join voice channels and `gemini-live-api` to stream audio from Gemini Live. This allows you to have a Gemini Live AI assistant that can talk in your Discord server.
-
-## Detail:
-- **Gemini Live Integration**: Speaks in real-time using Google's Gemini Live API
-- **Voice Channel Support**: Joins voice channels and streams audio
-- **Slash Commands**: Easy to use `/join` and `/leave` commands
+- It can join voicechats and like Live mode.
 
 # Setup
 
@@ -64,22 +56,10 @@ This project uses:
 
 - `discord.js-voice`: For voice connection management
 - `gemini-live-api`: For connecting to Gemini Live
-- `@google-cloud/gemini`: For the Gemini API (legacy mode)
+- `@google-cloud/gemini`: For the Gemini API
 - `node-opus`: For Opus encoding
 
 ## Troubleshooting
-
-### "Unsupported audio format" errors
-If you encounter audio format errors, make sure you have `node-opus` installed correctly:
-
-```bash
-npm install node-opus
-```
-
-On some systems, you may need to install Opus development libraries:
-
-- Debian/Ubuntu: `sudo apt-get install libopus-dev`
-- macOS: `brew install opus`
 
 ### API Rate Limits
 Gemini Live has rate limits. If you hit them, you'll see error messages in the console. Consider:
