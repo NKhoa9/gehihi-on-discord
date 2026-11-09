@@ -68,6 +68,97 @@ export function moveItemInArray(arr, item, { direction, position } = {}) {
 }
 
 /**
+ * Creates a new custom model series pool in models.json.
+ */
+export function createCustomSeries(seriesName, initialModels = []) {
+  const cleanName = (seriesName || "").trim().toLowerCase().replace(/\s+/g, "-");
+  if (!cleanName) return { success: false, error: "invalid_name" };
+
+  const registry = loadModelRegistry();
+  if (registry[cleanName]) {
+    return { success: false, error: "already_exists", list: registry[cleanName] };
+  }
+
+  const modelArray = Array.isArray(initialModels)
+    ? initialModels.map(m => m.trim()).filter(Boolean)
+    : [];
+
+  registry[cleanName] = modelArray;
+  saveModelRegistry(registry);
+  logger.log(`[Models] Created custom series "${cleanName}" with ${modelArray.length} model(s)`);
+  return { success: true, name: cleanName, list: registry[cleanName] };
+}
+
+/**
+ * Deletes a custom model series pool from models.json.
+ */
+export function deleteCustomSeries(seriesName) {
+  const cleanName = (seriesName || "").trim().toLowerCase();
+  const registry = loadModelRegistry();
+  if (!registry[cleanName]) {
+    return { success: false, error: "not_found" };
+  }
+
+  delete registry[cleanName];
+  saveModelRegistry(registry);
+  logger.log(`[Models] Deleted custom series "${cleanName}"`);
+  return { success: true, name: cleanName };
+}
+
+/**
+ * Creates a new custom task category in config.json.
+ */
+export function createTaskCategory(categoryName, initialItems = []) {
+  const cleanName = (categoryName || "").trim().toLowerCase().replace(/\s+/g, "_");
+  if (!cleanName) return { success: false, error: "invalid_name" };
+
+  const cfg = loadConfig();
+  if (!cfg.models) cfg.models = {};
+  if (cfg.models[cleanName]) {
+    return { success: false, error: "already_exists", list: cfg.models[cleanName] };
+  }
+
+  const items = Array.isArray(initialItems)
+    ? initialItems.map(i => i.trim()).filter(Boolean)
+    : [];
+
+  cfg.models[cleanName] = items;
+  fs.writeFileSync("config.json", JSON.stringify(cfg, null, 2), "utf-8");
+  logger.log(`[Models] Created task category "${cleanName}" with ${items.length} item(s)`);
+  return { success: true, name: cleanName, list: cfg.models[cleanName] };
+}
+
+/**
+ * Deletes a task category from config.json.
+ */
+export function deleteTaskCategory(categoryName) {
+  const cleanName = (categoryName || "").trim().toLowerCase();
+  const cfg = loadConfig();
+  if (!cfg.models || !cfg.models[cleanName]) {
+    return { success: false, error: "not_found" };
+  }
+
+  delete cfg.models[cleanName];
+  fs.writeFileSync("config.json", JSON.stringify(cfg, null, 2), "utf-8");
+  logger.log(`[Models] Deleted task category "${cleanName}"`);
+  return { success: true, name: cleanName };
+}
+
+/**
+ * Returns all series names in models.json.
+ */
+export function getAllSeriesNames(registry = loadModelRegistry()) {
+  return Object.keys(registry);
+}
+
+/**
+ * Returns all task category names in config.json.
+ */
+export function getAllTaskCategories(cfg = loadConfig()) {
+  return Object.keys(cfg.models || {});
+}
+
+/**
  * Adds a model to a series in models.json.
  */
 export function addModelToSeries(series, model, position = null) {
@@ -254,8 +345,10 @@ export function resolveModelList(list, registry = loadModelRegistry()) {
 export function getTaskModels(taskType, cfg = loadConfig(), registry = loadModelRegistry()) {
   const modelMode = cfg.model_mode || "flash-lite";
   const modelsCfg = cfg.models || {};
+  const upperTask = (taskType || "NORMAL").toUpperCase();
+  const lowerTask = (taskType || "normal").toLowerCase();
 
-  switch (taskType) {
+  switch (upperTask) {
     case "CLASSIFIER":
       // Classifier is ALWAYS gemini flash-lite (lightweight and fast)
       return resolveModelList(modelsCfg.classifier || ["flash-lite-series"], registry);
@@ -276,7 +369,20 @@ export function getTaskModels(taskType, cfg = loadConfig(), registry = loadModel
       return resolveModelList(modelsCfg.video_gen || ["video-gen-series"], registry);
 
     case "NORMAL":
+      if (modelMode === "flash") {
+        return resolveModelList(modelsCfg.default_flash || modelsCfg.thinking || ["flash-series"], registry);
+      }
+      return resolveModelList(modelsCfg.default || ["flash-lite-series", "gemma-series"], registry);
+
     default:
+      // Custom task category from config.models
+      if (modelsCfg[lowerTask]) {
+        return resolveModelList(modelsCfg[lowerTask], registry);
+      }
+      // Custom series directly from models.json registry
+      if (registry[lowerTask]) {
+        return resolveModelList([lowerTask], registry);
+      }
       if (modelMode === "flash") {
         return resolveModelList(modelsCfg.default_flash || modelsCfg.thinking || ["flash-series"], registry);
       }

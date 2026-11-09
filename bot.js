@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { Client, GatewayIntentBits, ActivityType, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, MessageFlags, AttachmentBuilder, Collection } from "discord.js";
+import { Client, GatewayIntentBits, Partials, ActivityType, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, MessageFlags, AttachmentBuilder, Collection } from "discord.js";
 import fs from "fs";
 import path from "path";
 import { joinAndStartLive, leaveLive } from "./voice.js";
@@ -7,12 +7,16 @@ import { joinAndStartLive, leaveLive } from "./voice.js";
 // -- New Modular Imports --
 import { logger } from "./src/utils/logger.js";
 import { loadConfig } from "./src/utils/config.js";
-import { getGuildMemories, setGuildMemories, processMemoryTags } from "./src/core/memory.js";
-import { pushHistory, clearHistory } from "./src/core/history.js";
+import { getGuildMemories, setGuildMemories, getUniversalMemories, setUniversalMemories, processMemoryTags } from "./src/core/memory.js";
+import { resolveGuildEmojis, resolveReactEmoji } from "./src/core/emojis.js";
+import { shouldRespond, recordBotReply } from "./src/core/trigger.js";
+import { pushHistory, clearHistory, updateHistoryReactions, getHistory } from "./src/core/history.js";
 import { cacheAttachments } from "./src/media/attachments.js";
 import { getSavedImagesList, getSavedImage, downloadImageToLib, searchGoogleImage } from "./src/media/images.js";
-import { generateImage, generateVideo, generateReply, generateComparisonReply } from "./src/ai/router.js";
+import { generateImage, generateVideo, generateReply, generateComparisonReply, generatePromptReply } from "./src/ai/router.js";
 import { addKey, removeKey, getAllKeys } from "./src/core/keys.js";
+import { isChannelDisabled, disableChannel, enableChannel, getDisabledChannels } from "./src/core/channel_control.js";
+import { getScheduledTasks, addScheduledTask, removeScheduledTask, toggleScheduledTask, startAllScheduledTasks, scheduleDailyTask, scheduleRandomTask } from "./src/core/scheduler.js";
 import {
   resolveModelList,
   loadModelRegistry,
@@ -21,7 +25,13 @@ import {
   moveModelInSeries,
   addModelToTask,
   removeModelFromTask,
-  moveModelInTask
+  moveModelInTask,
+  createCustomSeries,
+  deleteCustomSeries,
+  createTaskCategory,
+  deleteTaskCategory,
+  getAllSeriesNames,
+  getAllTaskCategories
 } from "./src/ai/models.js";
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
@@ -48,6 +58,14 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildExpressions,
+  ],
+  partials: [
+    Partials.Message,
+    Partials.Channel,
+    Partials.Reaction,
   ],
 });
 
@@ -68,10 +86,30 @@ const commands = [
     .setDescription("Check if the bot is alive"),
   new SlashCommandBuilder()
     .setName("memories")
-    .setDescription("View the bot's saved memories for this server"),
+    .setDescription("View the bot's saved memories")
+    .addStringOption(option =>
+      option.setName("scope")
+        .setDescription("Which memories to view (all, universal, server)")
+        .setRequired(false)
+        .addChoices(
+          { name: "all (universal + server)", value: "all" },
+          { name: "universal (facts & skills)", value: "universal" },
+          { name: "server (context & lore)", value: "server" }
+        )
+    ),
   new SlashCommandBuilder()
     .setName("reset_memory")
-    .setDescription("[Admin] Completely erase the AI's saved memories for this server"),
+    .setDescription("[Admin] Completely erase AI memories")
+    .addStringOption(option =>
+      option.setName("scope")
+        .setDescription("Which memories to erase (server, universal, all)")
+        .setRequired(false)
+        .addChoices(
+          { name: "server (this server only)", value: "server" },
+          { name: "universal (global facts & skills)", value: "universal" },
+          { name: "all (both server & universal)", value: "all" }
+        )
+    ),
   new SlashCommandBuilder()
     .setName("pause_ai")
     .setDescription("[Admin] Pause or unpause the AI from responding in text channels"),
@@ -83,6 +121,7 @@ const commands = [
         .setDescription('The setting to change')
         .setRequired(true)
         .addChoices(
+          { name: 'response_mode', value: 'response_mode' },
           { name: 'max_history', value: 'max_history' },
           { name: 'random_appear_rate', value: 'random_appear_rate' },
           { name: 'silence_duration_ms', value: 'silence_duration_ms' },
@@ -90,9 +129,11 @@ const commands = [
           { name: 'model_mode', value: 'model_mode' },
           { name: 'logging', value: 'logging' },
           { name: 'debug_logging', value: 'debug_logging' },
-          { name: 'show_errors_in_chat', value: 'show_errors_in_chat' }
+          { name: 'show_errors_in_chat', value: 'show_errors_in_chat' },
+          { name: 'greet_new_members', value: 'greet_new_members' },
+          { name: 'greet_channel_id', value: 'greet_channel_id' }
         ))
-    .addStringOption(option => option.setName('value').setDescription('The new value').setRequired(true)),
+    .addStringOption(option => option.setName('value').setDescription('The new value (or "none" to clear)').setRequired(true)),
   new SlashCommandBuilder()
     .setName("config_check")
     .setDescription("[Admin] View the current bot configuration"),
@@ -162,17 +203,9 @@ const commands = [
     .setDescription("[Admin] Set the active model list for a category")
     .addStringOption(option =>
       option.setName('category')
-        .setDescription('The category to update')
+        .setDescription('The category to update (or custom category)')
         .setRequired(true)
-        .addChoices(
-          { name: 'classifier', value: 'classifier' },
-          { name: 'default', value: 'default' },
-          { name: 'thinking', value: 'thinking' },
-          { name: 'search', value: 'search' },
-          { name: 'live', value: 'live' },
-          { name: 'image_gen', value: 'image_gen' },
-          { name: 'video_gen', value: 'video_gen' }
-        ))
+        .setAutocomplete(true))
     .addStringOption(option =>
       option.setName('models')
         .setDescription('Comma-separated list of models (e.g. gemini-3.5-flash-lite, gemini-3.1-flash-lite)')
@@ -182,16 +215,9 @@ const commands = [
     .setDescription("[Admin] Add a model to a series in models.json")
     .addStringOption(option =>
       option.setName('series')
-        .setDescription('The series to add to')
+        .setDescription('The series to add to (e.g. flash-series or custom)')
         .setRequired(true)
-        .addChoices(
-          { name: 'flash-lite-series', value: 'flash-lite-series' },
-          { name: 'flash-series', value: 'flash-series' },
-          { name: 'gemma-series', value: 'gemma-series' },
-          { name: 'live-series', value: 'live-series' },
-          { name: 'image-gen-series', value: 'image-gen-series' },
-          { name: 'video-gen-series', value: 'video-gen-series' }
-        ))
+        .setAutocomplete(true))
     .addStringOption(option =>
       option.setName('model')
         .setDescription('The model name (e.g. gemini-3.8-flash)')
@@ -208,14 +234,7 @@ const commands = [
       option.setName('series')
         .setDescription('The series to remove from')
         .setRequired(true)
-        .addChoices(
-          { name: 'flash-lite-series', value: 'flash-lite-series' },
-          { name: 'flash-series', value: 'flash-series' },
-          { name: 'gemma-series', value: 'gemma-series' },
-          { name: 'live-series', value: 'live-series' },
-          { name: 'image-gen-series', value: 'image-gen-series' },
-          { name: 'video-gen-series', value: 'video-gen-series' }
-        ))
+        .setAutocomplete(true))
     .addStringOption(option =>
       option.setName('model')
         .setDescription('The model name to remove')
@@ -227,14 +246,7 @@ const commands = [
       option.setName('series')
         .setDescription('The series')
         .setRequired(true)
-        .addChoices(
-          { name: 'flash-lite-series', value: 'flash-lite-series' },
-          { name: 'flash-series', value: 'flash-series' },
-          { name: 'gemma-series', value: 'gemma-series' },
-          { name: 'live-series', value: 'live-series' },
-          { name: 'image-gen-series', value: 'image-gen-series' },
-          { name: 'video-gen-series', value: 'video-gen-series' }
-        ))
+        .setAutocomplete(true))
     .addStringOption(option =>
       option.setName('model')
         .setDescription('The model to move')
@@ -261,30 +273,15 @@ const commands = [
       option.setName('series')
         .setDescription('Filter by specific series (optional)')
         .setRequired(false)
-        .addChoices(
-          { name: 'flash-lite-series', value: 'flash-lite-series' },
-          { name: 'flash-series', value: 'flash-series' },
-          { name: 'gemma-series', value: 'gemma-series' },
-          { name: 'live-series', value: 'live-series' },
-          { name: 'image-gen-series', value: 'image-gen-series' },
-          { name: 'video-gen-series', value: 'video-gen-series' }
-        )),
+        .setAutocomplete(true)),
   new SlashCommandBuilder()
     .setName("model_add")
     .setDescription("[Admin] Add a series or model to a task category in config.json")
     .addStringOption(option =>
       option.setName('category')
-        .setDescription('The task category')
+        .setDescription('The task category (built-in or custom)')
         .setRequired(true)
-        .addChoices(
-          { name: 'classifier', value: 'classifier' },
-          { name: 'default', value: 'default' },
-          { name: 'thinking', value: 'thinking' },
-          { name: 'search', value: 'search' },
-          { name: 'live', value: 'live' },
-          { name: 'image_gen', value: 'image_gen' },
-          { name: 'video_gen', value: 'video_gen' }
-        ))
+        .setAutocomplete(true))
     .addStringOption(option =>
       option.setName('item')
         .setDescription('Series name (e.g. flash-series) or specific model name')
@@ -299,17 +296,9 @@ const commands = [
     .setDescription("[Admin] Remove a series or model from a task category in config.json")
     .addStringOption(option =>
       option.setName('category')
-        .setDescription('The task category')
+        .setDescription('The task category (built-in or custom)')
         .setRequired(true)
-        .addChoices(
-          { name: 'classifier', value: 'classifier' },
-          { name: 'default', value: 'default' },
-          { name: 'thinking', value: 'thinking' },
-          { name: 'search', value: 'search' },
-          { name: 'live', value: 'live' },
-          { name: 'image_gen', value: 'image_gen' },
-          { name: 'video_gen', value: 'video_gen' }
-        ))
+        .setAutocomplete(true))
     .addStringOption(option =>
       option.setName('item')
         .setDescription('Series or model name to remove')
@@ -319,17 +308,9 @@ const commands = [
     .setDescription("[Admin] Move a series or model's priority (up/down/top/bottom) in config.json")
     .addStringOption(option =>
       option.setName('category')
-        .setDescription('The task category')
+        .setDescription('The task category (built-in or custom)')
         .setRequired(true)
-        .addChoices(
-          { name: 'classifier', value: 'classifier' },
-          { name: 'default', value: 'default' },
-          { name: 'thinking', value: 'thinking' },
-          { name: 'search', value: 'search' },
-          { name: 'live', value: 'live' },
-          { name: 'image_gen', value: 'image_gen' },
-          { name: 'video_gen', value: 'video_gen' }
-        ))
+        .setAutocomplete(true))
     .addStringOption(option =>
       option.setName('item')
         .setDescription('Series or model to move')
@@ -359,6 +340,60 @@ const commands = [
   new SlashCommandBuilder()
     .setName("remove_key")
     .setDescription("Remove your previously donated Gemini API key"),
+  new SlashCommandBuilder()
+    .setName("disable_ai")
+    .setDescription("[Admin] Disable AI responses in a specific channel")
+    .addChannelOption(option => option.setName('channel').setDescription('The channel to disable AI in (defaults to current)').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName("enable_ai")
+    .setDescription("[Admin] Re-enable AI responses in a previously disabled channel")
+    .addChannelOption(option => option.setName('channel').setDescription('The channel to re-enable AI in (defaults to current)').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName("schedule_add")
+    .setDescription("[Admin] Add a scheduled AI message task")
+    .addChannelOption(option => option.setName('channel').setDescription('Channel to send messages in (defaults to current)').setRequired(false))
+    .addStringOption(option => option.setName('prompt').setDescription('What the AI should talk about').setRequired(false))
+    .addStringOption(option =>
+      option.setName('type')
+        .setDescription('Schedule type')
+        .setRequired(false)
+        .addChoices(
+          { name: 'Random interval', value: 'random' },
+          { name: 'Daily at fixed time', value: 'daily' }
+        ))
+    .addIntegerOption(option => option.setName('interval_min').setDescription('Min minutes between messages (random type, default 60)').setRequired(false).setMinValue(5))
+    .addIntegerOption(option => option.setName('interval_max').setDescription('Max minutes between messages (random type, default 480)').setRequired(false).setMinValue(10))
+    .addIntegerOption(option => option.setName('hour').setDescription('Hour in UTC (daily type, 0-23)').setRequired(false).setMinValue(0).setMaxValue(23))
+    .addIntegerOption(option => option.setName('minute').setDescription('Minute (daily type, 0-59)').setRequired(false).setMinValue(0).setMaxValue(59)),
+  new SlashCommandBuilder()
+    .setName("schedule_remove")
+    .setDescription("[Admin] Remove a scheduled task by ID")
+    .addStringOption(option => option.setName('id').setDescription('Task ID to remove').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("schedule_toggle")
+    .setDescription("[Admin] Enable/disable a scheduled task")
+    .addStringOption(option => option.setName('id').setDescription('Task ID to toggle').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("schedule_list")
+    .setDescription("[Admin] View all scheduled tasks"),
+  new SlashCommandBuilder()
+    .setName("series_create")
+    .setDescription("[Admin] Create a new custom model series in models.json")
+    .addStringOption(option => option.setName('name').setDescription('Series name (e.g. my-custom-series)').setRequired(true))
+    .addStringOption(option => option.setName('models').setDescription('Comma-separated initial models (optional)').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName("series_delete")
+    .setDescription("[Admin] Delete a custom model series from models.json")
+    .addStringOption(option => option.setName('name').setDescription('Series name to delete').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("category_create")
+    .setDescription("[Admin] Create a new custom task category in config.json")
+    .addStringOption(option => option.setName('name').setDescription('Category name (e.g. creative)').setRequired(true))
+    .addStringOption(option => option.setName('items').setDescription('Comma-separated initial series/models (optional)').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName("category_delete")
+    .setDescription("[Admin] Delete a custom task category from config.json")
+    .addStringOption(option => option.setName('name').setDescription('Category name to delete').setRequired(true)),
 ].map((cmd) => cmd.toJSON());
 
 async function registerCommands() {
@@ -455,17 +490,96 @@ function smartSplit(text, maxLength) {
 
 // ── Events ──────────────────────────────────────────────────────────────────
 
+// ── Scheduled Messages Sender ───────────────────────────────────────────────
+
+async function sendScheduledMessage(channelId, guildId, prompt) {
+  try {
+    if (isChannelDisabled(channelId)) {
+      logger.debug(`[Scheduler] Skipping scheduled message in disabled channel ${channelId}`);
+      return;
+    }
+    const channel = await client.channels.fetch(channelId);
+    if (!channel || !channel.isTextBased()) return;
+    const reply = await generatePromptReply(prompt, guildId);
+    if (reply && !reply.includes("[IGNORE]")) {
+      const chunks = smartSplit(reply, 2000);
+      for (const chunk of chunks) {
+        await channel.send({ content: chunk, allowedMentions: { parse: ['users', 'roles'] } });
+      }
+      logger.log(`[Scheduler] Sent scheduled message in ${channelId}`);
+    }
+  } catch (err) {
+    logger.error(`[Scheduler] Failed to send to ${channelId}:`, err.message);
+  }
+}
+
 client.once("ready", async () => {
   logger.log(`🤖 Logged in as ${client.user.tag}`);
   logger.log(`📡 Connected to ${client.guilds.cache.size} server(s)`);
   client.user.setActivity("your RAMs ✨", { type: ActivityType.Playing });
   await registerCommands();
+
+  // Pre-fetch custom emojis for all connected guilds
+  for (const guild of client.guilds.cache.values()) {
+    try {
+      await guild.emojis.fetch();
+    } catch (err) {
+      logger.warn(`[Emojis] Failed to fetch emojis for guild ${guild.name}:`, err.message);
+    }
+  }
+
+  // Start all enabled scheduled tasks
+  startAllScheduledTasks(sendScheduledMessage);
+});
+
+// ── Greet New Members ───────────────────────────────────────────────────────
+
+client.on("guildMemberAdd", async (member) => {
+  const cfg = loadConfig();
+  if (cfg.greet_new_members === false) return;
+
+  // 1. Check configured greet channel
+  let channel = null;
+  if (cfg.greet_channel_id) {
+    channel = member.guild.channels.cache.get(cfg.greet_channel_id) || await client.channels.fetch(cfg.greet_channel_id).catch(() => null);
+  }
+  // 2. Fall back to system channel
+  if (!channel && member.guild.systemChannel) {
+    channel = member.guild.systemChannel;
+  }
+  // 3. Fall back to first available text channel where bot can send messages
+  if (!channel) {
+    const me = member.guild.members.me || client.user.id;
+    channel = member.guild.channels.cache.find(ch =>
+      ch.isTextBased() &&
+      ch.permissionsFor(me)?.has(PermissionFlagsBits.SendMessages)
+    );
+  }
+  if (!channel) return;
+
+  // Skip if channel is disabled
+  if (isChannelDisabled(channel.id, cfg)) return;
+
+  try {
+    const prompt = `A new member just joined the Discord server! Their name is "${member.displayName}" (username: ${member.user.username}, ID: ${member.id}). The server name is "${member.guild.name}". Write a short, warm, and fun welcome greeting for them. Keep it casual and friendly, 1-3 sentences max. Don't use any control tags.`;
+    const greeting = await generatePromptReply(prompt, member.guild.id, member.guild);
+    if (greeting) {
+      await channel.send({ content: greeting, allowedMentions: { parse: ['users'] } });
+      logger.log(`[Greet] Welcomed ${member.user.username} in ${member.guild.name}`);
+    }
+  } catch (err) {
+    logger.error(`[Greet] Failed to greet ${member.user.username}:`, err.message);
+  }
 });
 
 let isAIPaused = false;
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
+
+  if (message.guild && message.guild.emojis.cache.size === 0) {
+    await message.guild.emojis.fetch().catch(() => {});
+  }
 
   const userText = cleanContent(message);
   const userName = message.author.displayName || message.author.username;
@@ -481,7 +595,17 @@ client.on("messageCreate", async (message) => {
       const replyAuthorId = repliedMsg.author.id;
       let replyContent = (repliedMsg.content || "").substring(0, 100);
       replyContent = replyContent.replace(/<a?:(\w+):\d+>/g, ':$1:');
-      historyPrefix += ` [replying to ${replyAuthor} (ID: ${replyAuthorId}): "${replyContent}"]`;
+
+      let repliedRx = "";
+      if (repliedMsg.reactions?.cache?.size > 0) {
+        const rxList = [];
+        for (const [, rx] of repliedMsg.reactions.cache) {
+          const emojiStr = rx.emoji.id ? `<${rx.emoji.animated ? "a" : ""}:${rx.emoji.name}:${rx.emoji.id}>` : rx.emoji.name;
+          rxList.push(`${emojiStr} x${rx.count}`);
+        }
+        if (rxList.length > 0) repliedRx = ` [reactions: ${rxList.join(", ")}]`;
+      }
+      historyPrefix += ` [replying to ${replyAuthor} (ID: ${replyAuthorId})${repliedRx}: "${replyContent}"]`;
     } catch { }
   }
 
@@ -489,9 +613,20 @@ client.on("messageCreate", async (message) => {
     ? await cacheAttachments(message.attachments)
     : [];
 
-  pushHistory(message.channel.id, "user", `${historyPrefix}: ${userText}`, cachedAttachments);
+  // Collect existing reactions on the message (usually empty for new messages)
+  const initialReactions = [];
+  if (message.reactions?.cache?.size > 0) {
+    for (const [, rx] of message.reactions.cache) {
+      const emojiStr = rx.emoji.id ? `<${rx.emoji.animated ? "a" : ""}:${rx.emoji.name}:${rx.emoji.id}>` : rx.emoji.name;
+      initialReactions.push({ emoji: emojiStr, count: rx.count });
+    }
+  }
+  pushHistory(message.channel.id, "user", `${historyPrefix}: ${userText}`, cachedAttachments, message.id, initialReactions);
 
   if (isAIPaused) return;
+
+  // Check if AI is disabled in this channel
+  if (isChannelDisabled(message.channel.id)) return;
 
   let isMentioned = message.mentions.has(client.user);
   let isReplyToBot = false;
@@ -506,17 +641,38 @@ client.on("messageCreate", async (message) => {
   }
 
   const cfg = loadConfig();
-  const randomRate = cfg.random_appear_rate ?? 0.05;
-  const shouldProcess = isMentioned || isReplyToBot || Math.random() < randomRate;
+  const decision = shouldRespond({
+    message,
+    client,
+    cfg,
+    userText,
+    isMentioned,
+    isReplyToBot
+  });
 
-  if (!shouldProcess) {
-    logger.debug(`[Ignore] Random dice failed or not mentioned. userName: ${userName}`);
+  if (!decision.shouldProcess) {
+    logger.debug(`[Ignore] Trigger check not passed (${decision.reason}, mode: ${decision.mode}). userName: ${userName}`);
     return;
   }
 
   logger.debug(`[Process] Starting generation for message from ${userName}`);
   try {
     await message.channel.sendTyping();
+
+    // Sync latest reactions for messages in this channel's history from Discord cache
+    for (const entry of getHistory(message.channel.id)) {
+      if (entry.messageId) {
+        const cached = message.channel.messages.cache.get(entry.messageId);
+        if (cached && cached.reactions?.cache?.size > 0) {
+          const rxList = [];
+          for (const [, rx] of cached.reactions.cache) {
+            const emojiStr = rx.emoji.id ? `<${rx.emoji.animated ? "a" : ""}:${rx.emoji.name}:${rx.emoji.id}>` : rx.emoji.name;
+            rxList.push({ emoji: emojiStr, count: rx.count });
+          }
+          entry.reactions = rxList;
+        }
+      }
+    }
 
     // ── Model Comparison Mode ───────────────────────────────────────────
     if (cfg.model_compare?.enabled && cfg.model_compare?.models?.length > 0) {
@@ -525,7 +681,8 @@ client.on("messageCreate", async (message) => {
       const results = await generateComparisonReply(
         message.channel.id,
         userText,
-        message.guildId
+        message.guildId,
+        message.guild
       );
 
       // Color palette for embeds so each model is visually distinct
@@ -557,6 +714,7 @@ client.on("messageCreate", async (message) => {
           await message.channel.send({ ...replyOpts, embeds: batch });
         }
       }
+      recordBotReply(message.channel.id);
       return; // Skip normal reply flow
     }
     // ── End Comparison Mode ─────────────────────────────────────────────
@@ -564,7 +722,8 @@ client.on("messageCreate", async (message) => {
     const replyResult = await generateReply(
       message.channel.id,
       userText,
-      message.guildId
+      message.guildId,
+      message.guild
     );
 
     const replyText = typeof replyResult === "object" ? replyResult.text : replyResult;
@@ -573,9 +732,7 @@ client.on("messageCreate", async (message) => {
     let finalReply = (replyText || "").trim();
     logger.log(`\n[Raw AI Response]:\n${finalReply}\n--------------------------`);
 
-    if (message.guildId) {
-      finalReply = processMemoryTags(finalReply, message.guildId);
-    }
+    finalReply = processMemoryTags(finalReply, message.guildId);
 
     logger.log(`[Response] to ${userName} in ${message.channel.id}: ${finalReply}`);
 
@@ -583,10 +740,24 @@ client.on("messageCreate", async (message) => {
 
     const reactMatch = finalReply.match(/\[REACT:\s*(.+?)\]/);
     if (reactMatch) {
-      const emoji = reactMatch[1].trim();
-      try { await message.react(emoji); } catch (err) { logger.error("Failed to react:", emoji); }
+      const rawEmoji = reactMatch[1].trim();
+      const emojiToReact = resolveReactEmoji(rawEmoji, message.guild);
+      if (emojiToReact) {
+        try {
+          await message.react(emojiToReact);
+        } catch (err) {
+          logger.error(`Failed to react with "${rawEmoji}":`, err.message);
+        }
+      }
       finalReply = finalReply.replace(/\[REACT:\s*.+?\]/gi, "").trim();
-      if (!finalReply) return;
+      if (!finalReply) {
+        recordBotReply(message.channel.id);
+        return;
+      }
+    }
+
+    if (message.guild) {
+      finalReply = resolveGuildEmojis(finalReply, message.guild);
     }
 
     const attachments = [];
@@ -680,7 +851,8 @@ client.on("messageCreate", async (message) => {
     finalReply = finalReply.replace(/\n\s*\n/g, "\n\n").trim();
 
     // Task 4: Push the PROCESSED reply to history (after all tag stripping)
-    pushHistory(message.channel.id, "model", finalReply);
+    pushHistory(message.channel.id, "model", finalReply, [], null, []);
+    recordBotReply(message.channel.id);
 
     const replyOpts = {
       allowedMentions: { repliedUser: false, parse: ['users', 'roles'] },
@@ -689,6 +861,7 @@ client.on("messageCreate", async (message) => {
 
     const hasModelFootnote = modelUsed && modelUsed !== "none";
 
+    let sentMsg = null;
     if (shouldEmbed) {
       let isParsedJson = false;
       try {
@@ -714,7 +887,7 @@ client.on("messageCreate", async (message) => {
             } else if (hasModelFootnote) {
               embed.setFooter({ text: ` ${modelUsed}` });
             }
-            await message.reply({ ...replyOpts, embeds: [embed] });
+            sentMsg = await message.reply({ ...replyOpts, embeds: [embed] });
             isParsedJson = true;
           }
         }
@@ -729,12 +902,13 @@ client.on("messageCreate", async (message) => {
               embed.setFooter({ text: ` ${modelUsed}` });
             }
             const opts = i === 0 ? { ...replyOpts, embeds: [embed] } : { embeds: [embed], allowedMentions: replyOpts.allowedMentions };
-            await message.reply(opts);
+            const m = await message.reply(opts);
+            if (!sentMsg) sentMsg = m;
           }
         } else {
           const embed = new EmbedBuilder().setColor(0x4285F4).setDescription(finalReply);
           if (hasModelFootnote) embed.setFooter({ text: ` ${modelUsed}` });
-          await message.reply({ ...replyOpts, embeds: [embed] });
+          sentMsg = await message.reply({ ...replyOpts, embeds: [embed] });
         }
       }
     } else {
@@ -743,9 +917,9 @@ client.on("messageCreate", async (message) => {
       }
       if (!finalReply && attachments.length > 0) {
         if (hasModelFootnote) {
-          await message.reply({ ...replyOpts, content: `-#  ${modelUsed}` });
+          sentMsg = await message.reply({ ...replyOpts, content: `-#  ${modelUsed}` });
         } else {
-          await message.reply(replyOpts);
+          sentMsg = await message.reply(replyOpts);
         }
       } else if (finalReply.length > 2000) {
         // Chunk long non-embed replies smartly to respect Discord's 2000 char limit
@@ -754,18 +928,74 @@ client.on("messageCreate", async (message) => {
           const opts = i === 0
             ? { ...replyOpts, content: chunks[i] }
             : { content: chunks[i], allowedMentions: replyOpts.allowedMentions };
-          await message.reply(opts);
+          const m = await message.reply(opts);
+          if (!sentMsg) sentMsg = m;
         }
       } else {
-        await message.reply({ ...replyOpts, content: finalReply });
+        sentMsg = await message.reply({ ...replyOpts, content: finalReply });
       }
+    }
+
+    if (sentMsg?.id) {
+      const hist = getHistory(message.channel.id);
+      const lastModel = [...hist].reverse().find(e => e.role === "model" && !e.messageId);
+      if (lastModel) lastModel.messageId = sentMsg.id;
     }
   } catch (err) {
     logger.error("Error handling message:", err);
   }
 });
 
+// ── Reaction Tracking ──────────────────────────────────────────────────────
+
+async function handleReactionUpdate(reaction) {
+  try {
+    // Partials: ensure the reaction and message are fully loaded
+    if (reaction.partial) await reaction.fetch();
+    if (reaction.message.partial) await reaction.message.fetch();
+
+    const msg = reaction.message;
+    const channelId = msg.channel.id;
+    const messageId = msg.id;
+
+    // Build the full reactions list from the message's current reaction cache
+    const reactions = [];
+    for (const [, rx] of msg.reactions.cache) {
+      const emojiStr = rx.emoji.id
+        ? `<${rx.emoji.animated ? "a" : ""}:${rx.emoji.name}:${rx.emoji.id}>`
+        : rx.emoji.name;
+      reactions.push({ emoji: emojiStr, count: rx.count });
+    }
+
+    updateHistoryReactions(channelId, messageId, reactions);
+  } catch (err) {
+    logger.debug("[Reactions] Failed to update reaction in history:", err.message);
+  }
+}
+
+client.on("messageReactionAdd", handleReactionUpdate);
+client.on("messageReactionRemove", handleReactionUpdate);
+
 client.on("interactionCreate", async (interaction) => {
+  if (interaction.isAutocomplete()) {
+    try {
+      const focusedOption = interaction.options.getFocused(true);
+      if (focusedOption.name === "series") {
+        const list = getAllSeriesNames();
+        const filtered = list.filter(s => s.toLowerCase().includes(focusedOption.value.toLowerCase())).slice(0, 25);
+        return await interaction.respond(filtered.map(s => ({ name: s, value: s })));
+      }
+      if (focusedOption.name === "category") {
+        const list = getAllTaskCategories();
+        const filtered = list.filter(c => c.toLowerCase().includes(focusedOption.value.toLowerCase())).slice(0, 25);
+        return await interaction.respond(filtered.map(c => ({ name: c, value: c })));
+      }
+    } catch (err) {
+      logger.error("[Autocomplete] Error:", err.message);
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
   logger.log(`[Command] ${interaction.user.tag} used /${interaction.commandName}`);
 
@@ -783,21 +1013,54 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (interaction.commandName === "memories") {
-    const memories = getGuildMemories(interaction.guildId);
-    if (memories.length === 0) {
-      await interaction.reply({ content: "🧠 No memories saved for this server yet!", flags: MessageFlags.Ephemeral });
-    } else {
-      const lines = memories.map((m, i) => `**#${i + 1}**: ${m.text}`).join("\n");
-      const embed = new EmbedBuilder().setColor(0x9B59B6).setTitle("🧠 Bot Memories").setDescription(lines.substring(0, 4096)).setFooter({ text: `${memories.length} memory(s) saved` });
-      await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    const scope = interaction.options.getString("scope") || "all";
+    const universalMemories = (scope === "all" || scope === "universal") ? getUniversalMemories() : [];
+    const serverMemories = (scope === "all" || scope === "server") ? (interaction.guildId ? getGuildMemories(interaction.guildId) : []) : [];
+
+    if (universalMemories.length === 0 && serverMemories.length === 0) {
+      const emptyMsg = scope === "universal"
+        ? "🧠 No universal memories saved yet!"
+        : scope === "server"
+          ? "🧠 No server memories saved for this server yet!"
+          : "🧠 No memories saved yet!";
+      return interaction.reply({ content: emptyMsg, flags: MessageFlags.Ephemeral });
     }
+
+    const embed = new EmbedBuilder()
+      .setColor(0x9B59B6)
+      .setTitle("🧠 AI Memories");
+
+    if (universalMemories.length > 0) {
+      const uLines = universalMemories.map((m, i) => `**#${i + 1}** \`[${m.id || 'N/A'}]\`: ${m.text}`).join("\n");
+      embed.addFields({
+        name: `🌐 Universal Facts & Skills (${universalMemories.length})`,
+        value: uLines.length > 1024 ? uLines.substring(0, 1020) + "..." : uLines,
+        inline: false
+      });
+    }
+
+    if (serverMemories.length > 0) {
+      const sLines = serverMemories.map((m, i) => `**#${i + 1}** \`[${m.id || 'N/A'}]\`: ${m.text}`).join("\n");
+      embed.addFields({
+        name: `🏰 Server Context & Lore (${serverMemories.length})`,
+        value: sLines.length > 1024 ? sLines.substring(0, 1020) + "..." : sLines,
+        inline: false
+      });
+    }
+
+    const totalCount = universalMemories.length + serverMemories.length;
+    embed.setFooter({ text: `${totalCount} memory item(s) • Scope: ${scope}` });
+    return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   }
 
   const adminCommands = [
     "reset_memory", "pause_ai", "config", "config_check", "add_image", "logs",
     "compare", "compare_add", "compare_remove", "compare_models", "set_models",
     "series_add", "series_remove", "series_move", "series_list",
-    "model_add", "model_remove", "model_move"
+    "model_add", "model_remove", "model_move",
+    "disable_ai", "enable_ai",
+    "schedule_add", "schedule_remove", "schedule_toggle", "schedule_list",
+    "series_create", "series_delete", "category_create", "category_delete"
   ];
   if (adminCommands.includes(interaction.commandName)) {
     const adminEnv = process.env.ADMINS || "";
@@ -807,8 +1070,18 @@ client.on("interactionCreate", async (interaction) => {
     if (!admins.includes(interaction.user.id)) return interaction.reply({ content: "❌ You are not on the bot's admin whitelist.", flags: MessageFlags.Ephemeral });
 
     if (interaction.commandName === "reset_memory") {
-      setGuildMemories(interaction.guildId, []);
-      return interaction.reply({ content: "🧠 All AI memories for this server have been completely wiped by an admin." });
+      const scope = interaction.options.getString("scope") || "server";
+      if (scope === "universal") {
+        setUniversalMemories([]);
+        return interaction.reply({ content: "🧠 All Universal AI memories (facts & skills) have been completely wiped by an admin." });
+      } else if (scope === "all") {
+        if (interaction.guildId) setGuildMemories(interaction.guildId, []);
+        setUniversalMemories([]);
+        return interaction.reply({ content: "🧠 All Server and Universal AI memories have been completely wiped by an admin." });
+      } else {
+        if (interaction.guildId) setGuildMemories(interaction.guildId, []);
+        return interaction.reply({ content: "🧠 All AI memories for this server have been completely wiped by an admin." });
+      }
     }
 
     if (interaction.commandName === "pause_ai") {
@@ -823,14 +1096,26 @@ client.on("interactionCreate", async (interaction) => {
       if (setting === "max_history" || setting === "silence_duration_ms") {
         newValue = parseInt(valueStr, 10);
         if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid integer.", flags: MessageFlags.Ephemeral });
+      } else if (setting === "response_mode") {
+        const lower = valueStr.toLowerCase();
+        if (lower !== "smart" && lower !== "random") {
+          return interaction.reply({ content: "❌ Value for `response_mode` must be `smart` or `random`.", flags: MessageFlags.Ephemeral });
+        }
+        newValue = lower;
       } else if (setting === "random_appear_rate") {
         newValue = parseFloat(valueStr);
         if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid number (e.g. 0.1).", flags: MessageFlags.Ephemeral });
-      } else if (setting === "logging" || setting === "debug_logging" || setting === "show_errors_in_chat") {
+      } else if (setting === "logging" || setting === "debug_logging" || setting === "show_errors_in_chat" || setting === "greet_new_members") {
         const lower = valueStr.toLowerCase();
         if (lower === "true" || lower === "on" || lower === "1") newValue = true;
         else if (lower === "false" || lower === "off" || lower === "0") newValue = false;
         else return interaction.reply({ content: "❌ Value must be `true`/`on` or `false`/`off`.", flags: MessageFlags.Ephemeral });
+      } else if (setting === "greet_channel_id") {
+        if (valueStr.toLowerCase() === "none" || valueStr.toLowerCase() === "clear") {
+          newValue = null;
+        } else {
+          newValue = valueStr.replace(/[<#>]/g, "").trim();
+        }
       } else if (setting === "model_mode") {
         const lower = valueStr.toLowerCase();
         if (lower !== "flash" && lower !== "flash-lite") {
@@ -877,12 +1162,17 @@ client.on("interactionCreate", async (interaction) => {
           { name: "🐛 Debug Logs", value: `\`${currentConfig.debug_logging ? "ON" : "OFF"}\``, inline: true },
           { name: "⚠️ Chat Errors", value: `\`${currentConfig.show_errors_in_chat ? "SHOW" : "HIDE"}\``, inline: true },
           { name: "📜 Max History", value: `\`${currentConfig.max_history ?? "N/A"}\``, inline: true },
+          { name: "🎯 Trigger Mode", value: `\`${currentConfig.response_mode || "smart"}\``, inline: true },
           { name: "🎲 Random Rate", value: `\`${currentConfig.random_appear_rate ?? "N/A"}\``, inline: true },
           { name: "🔇 Silence MS", value: `\`${currentConfig.silence_duration_ms ?? "N/A"}\``, inline: true },
           { name: "🎙️ Voice Name", value: `\`${currentConfig.voice_name ?? "N/A"}\``, inline: true },
           { name: "⚡ Model Mode", value: `\`${currentConfig.model_mode || "flash-lite"}\``, inline: true },
           { name: "⏸️ AI Paused", value: `\`${isAIPaused ? "YES" : "NO"}\``, inline: true },
         );
+
+      const greetStatus = currentConfig.greet_new_members !== false ? "✅ ON" : "❌ OFF";
+      const greetChannel = currentConfig.greet_channel_id ? ` in <#${currentConfig.greet_channel_id}>` : " (system channel)";
+      embed.addFields({ name: "👋 Member Greeting", value: `${greetStatus}${greetChannel}`, inline: true });
 
       const models = currentConfig.models || {};
       const registry = loadModelRegistry();
@@ -906,6 +1196,50 @@ client.on("interactionCreate", async (interaction) => {
           embed.addFields({ name: label, value: valueText, inline: false });
         }
       }
+
+      // Custom task categories in config.models
+      const standardKeys = ["classifier", "default", "search", "thinking", "live", "image_gen", "video_gen"];
+      const customCats = Object.entries(models).filter(([k]) => !standardKeys.includes(k));
+      for (const [catName, list] of customCats) {
+        if (Array.isArray(list) && list.length > 0) {
+          const resolved = resolveModelList(list, registry);
+          const rawDisplay = list.map(m => registry[m] ? `📁 \`${m}\`` : `\`${m}\``).join(", ");
+          const resolvedDisplay = resolved.map(m => `\`${m}\``).join(", ");
+          const valueText = (rawDisplay !== resolvedDisplay && list.some(m => registry[m]))
+            ? `${rawDisplay}\n└ *Active: ${resolvedDisplay}*`
+            : resolvedDisplay;
+          embed.addFields({ name: `✨ Custom Task: [${catName}]`, value: valueText, inline: false });
+        } else {
+          embed.addFields({ name: `✨ Custom Task: [${catName}]`, value: "*(empty)*", inline: false });
+        }
+      }
+
+      // Custom series in models.json
+      const standardSeries = ["flash-lite-series", "flash-series", "gemma-series", "live-series", "image-gen-series", "video-gen-series"];
+      const customSeries = Object.keys(registry).filter(s => !standardSeries.includes(s));
+      if (customSeries.length > 0) {
+        const seriesInfo = customSeries.map(s => {
+          const count = registry[s]?.length || 0;
+          return `• \`${s}\` (${count} model${count !== 1 ? 's' : ''})`;
+        }).join("\n");
+        embed.addFields({ name: "📦 Custom Series Pools", value: seriesInfo, inline: false });
+      }
+
+      // Disabled channels
+      const disabledChs = getDisabledChannels(currentConfig);
+      const disabledChsVal = disabledChs.length > 0
+        ? disabledChs.map(id => `<#${id}>`).join(", ")
+        : "*None (AI active everywhere)*";
+      embed.addFields({ name: "🔇 Disabled Channels", value: disabledChsVal, inline: false });
+
+      // Scheduled tasks
+      const schedTasks = getScheduledTasks(currentConfig);
+      const activeSchedCount = schedTasks.filter(t => t.enabled).length;
+      embed.addFields({
+        name: "⏰ Scheduled Tasks",
+        value: `${schedTasks.length} task(s) (${activeSchedCount} active) — Use \`/schedule_list\` to view`,
+        inline: false
+      });
 
       // Show comparison config
       const compare = currentConfig.model_compare || { enabled: false, models: [] };
@@ -1207,6 +1541,184 @@ client.on("interactionCreate", async (interaction) => {
         content: `🔄 Moved \`${item}\` in task \`${category}\`: **#${res.oldIndex + 1}** ➔ **#${res.newIndex + 1}**\n\n📋 **New Configured Order:**\n${res.list.map((m, i) => `**${i + 1}.** \`${m}\``).join("\n")}\n\n🔍 **Resolved Priority Order:**\n${resolved.map((m, i) => `**${i + 1}.** \`${m}\``).join("\n")}`,
         flags: MessageFlags.Ephemeral
       });
+    }
+    // ── Channel Control Commands ──────────────────────────────────────────
+    if (interaction.commandName === "disable_ai") {
+      const channel = interaction.options.getChannel('channel') || interaction.channel;
+      const res = disableChannel(channel.id);
+      if (res.alreadyDisabled) {
+        return interaction.reply({ content: `ℹ️ AI is already disabled in <#${channel.id}>.`, flags: MessageFlags.Ephemeral });
+      }
+      return interaction.reply({ content: `🔇 AI responses have been **disabled** in <#${channel.id}>.\nUse \`/enable_ai\` to re-enable.`, flags: MessageFlags.Ephemeral });
+    }
+
+    if (interaction.commandName === "enable_ai") {
+      const channel = interaction.options.getChannel('channel') || interaction.channel;
+      const res = enableChannel(channel.id);
+      if (!res.wasDisabled) {
+        return interaction.reply({ content: `ℹ️ AI was not disabled in <#${channel.id}>.`, flags: MessageFlags.Ephemeral });
+      }
+      return interaction.reply({ content: `🔊 AI responses have been **re-enabled** in <#${channel.id}>.`, flags: MessageFlags.Ephemeral });
+    }
+
+    // ── Scheduled Tasks Commands ─────────────────────────────────────────
+    if (interaction.commandName === "schedule_add") {
+      const channel = interaction.options.getChannel('channel') || interaction.channel;
+      const prompt = interaction.options.getString('prompt') || "Send something fun or interesting to the chat";
+      const type = interaction.options.getString('type') || "random";
+      const intervalMin = interaction.options.getInteger('interval_min') || 60;
+      const intervalMax = interaction.options.getInteger('interval_max') || 480;
+      const hour = interaction.options.getInteger('hour');
+      const minute = interaction.options.getInteger('minute') ?? 0;
+
+      if (type === "daily" && hour == null) {
+        return interaction.reply({ content: "❌ Daily schedule requires the `hour` option (0-23 UTC).", flags: MessageFlags.Ephemeral });
+      }
+      if (type === "random" && intervalMin >= intervalMax) {
+        return interaction.reply({ content: "❌ `interval_min` must be less than `interval_max`.", flags: MessageFlags.Ephemeral });
+      }
+
+      const task = addScheduledTask({
+        channelId: channel.id,
+        guildId: interaction.guildId,
+        prompt,
+        type,
+        intervalMin,
+        intervalMax,
+        fixedHour: hour,
+        fixedMinute: minute,
+        createdBy: interaction.user.id,
+      });
+
+      // Start it immediately
+      if (type === "daily") {
+        scheduleDailyTask(task, sendScheduledMessage);
+      } else {
+        scheduleRandomTask(task, sendScheduledMessage);
+      }
+
+      const scheduleInfo = type === "daily"
+        ? `Daily at **${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')} UTC**`
+        : `Random every **${intervalMin}–${intervalMax} min**`;
+
+      return interaction.reply({
+        content: `✅ Scheduled task created!\n🆔 \`${task.id}\`\n📋 Channel: <#${channel.id}>\n⏰ ${scheduleInfo}\n💬 Prompt: *${prompt.substring(0, 100)}${prompt.length > 100 ? '...' : ''}*`,
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "schedule_remove") {
+      const id = interaction.options.getString('id');
+      const res = removeScheduledTask(id);
+      if (!res.success) {
+        return interaction.reply({ content: `❌ Task \`${id}\` not found.`, flags: MessageFlags.Ephemeral });
+      }
+      return interaction.reply({ content: `🗑️ Removed scheduled task \`${id}\`.`, flags: MessageFlags.Ephemeral });
+    }
+
+    if (interaction.commandName === "schedule_toggle") {
+      const id = interaction.options.getString('id');
+      const res = toggleScheduledTask(id);
+      if (!res.success) {
+        return interaction.reply({ content: `❌ Task \`${id}\` not found.`, flags: MessageFlags.Ephemeral });
+      }
+      const status = res.task.enabled ? "▶️ **Enabled**" : "⏸️ **Disabled**";
+
+      // If re-enabled, restart the timer
+      if (res.task.enabled) {
+        if (res.task.type === "daily") {
+          scheduleDailyTask(res.task, sendScheduledMessage);
+        } else {
+          scheduleRandomTask(res.task, sendScheduledMessage);
+        }
+      }
+
+      return interaction.reply({ content: `⏰ Task \`${id}\`: ${status}`, flags: MessageFlags.Ephemeral });
+    }
+
+    if (interaction.commandName === "schedule_list") {
+      const tasks = getScheduledTasks();
+      if (tasks.length === 0) {
+        return interaction.reply({ content: "📋 No scheduled tasks configured.", flags: MessageFlags.Ephemeral });
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle("⏰ Scheduled Tasks")
+        .setDescription(`${tasks.length} task(s) configured`);
+
+      for (const t of tasks.slice(0, 25)) {
+        const status = t.enabled ? "✅" : "⏸️";
+        const schedule = t.type === "daily"
+          ? `Daily at ${String(t.fixed_hour ?? 0).padStart(2, '0')}:${String(t.fixed_minute ?? 0).padStart(2, '0')} UTC`
+          : `Random ${t.interval_min || 60}–${t.interval_max || 480} min`;
+        embed.addFields({
+          name: `${status} \`${t.id}\` — <#${t.channel_id}>`,
+          value: `${schedule}\n💬 *${(t.prompt || "").substring(0, 80)}${(t.prompt || "").length > 80 ? "..." : ""}*`,
+          inline: false
+        });
+      }
+      embed.setFooter({ text: "Use /schedule_add, /schedule_remove, /schedule_toggle" });
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    }
+
+    // ── Custom Series & Category Commands ────────────────────────────────
+    if (interaction.commandName === "series_create") {
+      const name = interaction.options.getString('name');
+      const modelsStr = interaction.options.getString('models');
+      const initialModels = modelsStr ? modelsStr.split(",").map(m => m.trim()).filter(Boolean) : [];
+      const res = createCustomSeries(name, initialModels);
+      if (!res.success) {
+        if (res.error === "already_exists") {
+          return interaction.reply({ content: `⚠️ Series \`${name}\` already exists.`, flags: MessageFlags.Ephemeral });
+        }
+        return interaction.reply({ content: `❌ Failed: ${res.error}`, flags: MessageFlags.Ephemeral });
+      }
+      const listStr = res.list.length > 0 ? res.list.map(m => `\`${m}\``).join(", ") : "*(empty)*";
+      return interaction.reply({
+        content: `✅ Created series \`${res.name}\`!\n📋 Models: ${listStr}\n\nYou can now use it in task categories with \`/model_add\`, or trigger it in chat with \`[${res.name}]\`.`,
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "series_delete") {
+      const name = interaction.options.getString('name');
+      const res = deleteCustomSeries(name);
+      if (!res.success) {
+        return interaction.reply({ content: `❌ Series \`${name}\` not found.`, flags: MessageFlags.Ephemeral });
+      }
+      return interaction.reply({ content: `🗑️ Deleted series \`${res.name}\`.`, flags: MessageFlags.Ephemeral });
+    }
+
+    if (interaction.commandName === "category_create") {
+      const name = interaction.options.getString('name');
+      const itemsStr = interaction.options.getString('items');
+      const initialItems = itemsStr ? itemsStr.split(",").map(i => i.trim()).filter(Boolean) : [];
+      const res = createTaskCategory(name, initialItems);
+      if (!res.success) {
+        if (res.error === "already_exists") {
+          return interaction.reply({ content: `⚠️ Category \`${name}\` already exists.`, flags: MessageFlags.Ephemeral });
+        }
+        return interaction.reply({ content: `❌ Failed: ${res.error}`, flags: MessageFlags.Ephemeral });
+      }
+      const listStr = res.list.length > 0 ? res.list.map(i => `\`${i}\``).join(", ") : "*(empty)*";
+      return interaction.reply({
+        content: `✅ Created task category \`${res.name}\`!\n📋 Items: ${listStr}\n\nYou can trigger it in chat with \`[CATEGORY: ${res.name}]\` or \`[${res.name}]\`.\nUse \`/model_add\` to add series/models to it.`,
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "category_delete") {
+      const name = interaction.options.getString('name');
+      const protected_cats = ["default", "classifier", "search", "thinking", "live", "image_gen", "video_gen"];
+      if (protected_cats.includes(name.toLowerCase())) {
+        return interaction.reply({ content: `❌ Cannot delete built-in category \`${name}\`.`, flags: MessageFlags.Ephemeral });
+      }
+      const res = deleteTaskCategory(name);
+      if (!res.success) {
+        return interaction.reply({ content: `❌ Category \`${name}\` not found.`, flags: MessageFlags.Ephemeral });
+      }
+      return interaction.reply({ content: `🗑️ Deleted task category \`${res.name}\`.`, flags: MessageFlags.Ephemeral });
     }
   }
 
