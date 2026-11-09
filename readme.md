@@ -15,18 +15,8 @@ Supports Discord moderation commands like: ban, kick, timeout, purge, etc...
 
 # Setup
 
-1. Clone the repository:
-
-```bash
-cd "D:\!Khoa\Resources\!Code\gemini bot"
-```
-
-2. Install dependencies:
-
-```bash
-npm install
-```
-
+1. Clone the repository
+2. Install dependencies
 3. Create a `.env` file in the root directory with the following variables:
 
 ```env
