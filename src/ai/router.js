@@ -2,9 +2,10 @@ import fs from "fs";
 import path from "path";
 import { logger } from "../utils/logger.js";
 import { loadConfig, sleep } from "../utils/config.js";
-import { getHistory } from "../core/history.js";
+import { getHistory, formatReactionsString } from "../core/history.js";
 import { getSavedImagesList } from "../media/images.js";
 import { buildMemoryBlock } from "../core/memory.js";
+import { buildGuildEmojisBlock } from "../core/emojis.js";
 import { AIProvider, GeminiProvider, createGeminiProvider } from "./provider.js";
 import { getDonatedApiKeys } from "../core/keys.js";
 import { getTaskModels, resolveModelList, loadModelRegistry } from "./models.js";
@@ -25,6 +26,22 @@ function loadSystemPrompt() {
 }
 
 const BASE_SYSTEM_PROMPT = loadSystemPrompt();
+
+/**
+ * Formats a contents payload array into a human-readable string for logging.
+ * @param {Array<{ role: string, parts: Array<{ text?: string, inlineData?: { mimeType: string } }> }>} contents
+ * @returns {string}
+ */
+export function formatContentsForLog(contents) {
+  return contents.map(c => {
+    const partsText = c.parts.map(p => {
+      if (p.text) return p.text;
+      if (p.inlineData) return `[Attachment: ${p.inlineData.mimeType || "unknown"}]`;
+      return JSON.stringify(p);
+    }).join(" ");
+    return `[${c.role}]: ${partsText}`;
+  }).join("\n");
+}
 
 export async function generateImage(prompt) {
   const cfg = loadConfig();
@@ -112,16 +129,27 @@ User message: "${text}"`;
   return "NORMAL";
 }
 
-export async function generateReply(channelId, userText, guildId = null) {
+export async function generateReply(channelId, userText, guildId = null, guild = null) {
   const history = getHistory(channelId);
 
   const contents = history.map((entry) => {
-    const parts = [{ text: entry.text }];
+    const rxStr = formatReactionsString(entry.reactions);
+    const parts = [{ text: `${entry.text}${rxStr}` }];
+
     if (entry.attachments && entry.attachments.length > 0) {
       for (const att of entry.attachments) {
+        if (att.isUnsupported) {
+          parts.push({
+            text: `[Attached file: ${att.filename || "unknown"} (unsupported binary format, cannot be read)]`
+          });
+          continue;
+        }
         try {
-          if (fs.existsSync(att.filepath)) {
+          if (att.filepath && fs.existsSync(att.filepath)) {
             const buffer = fs.readFileSync(att.filepath);
+            parts.push({
+              text: `[File attached: ${att.filename || path.basename(att.filepath)}]`
+            });
             parts.push({
               inlineData: { data: buffer.toString("base64"), mimeType: att.mimeType }
             });
@@ -134,13 +162,14 @@ export async function generateReply(channelId, userText, guildId = null) {
     return { role: entry.role, parts };
   });
 
-  const memoryBlock = guildId ? buildMemoryBlock(guildId) : "";
+  const memoryBlock = buildMemoryBlock(guildId);
   const savedImages = getSavedImagesList();
   const imagesBlock = savedImages.length > 0
     ? `\n\n--- YOUR SAVED IMAGES ---\nYou currently have these images saved in your library:\n${savedImages.map(f => `- ${f}`).join("\n")}\nYou can send them using [SEND_IMG: name].\n--- END SAVED IMAGES ---`
     : "\n\n--- YOUR SAVED IMAGES ---\nYour library is empty. You can save images using [SAVE_IMG: url | name].\n--- END SAVED IMAGES ---";
+  const emojisBlock = guild ? buildGuildEmojisBlock(guild) : "";
 
-  const SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + memoryBlock + imagesBlock;
+  const SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + memoryBlock + imagesBlock + emojisBlock;
 
   let taskType = "NORMAL";
   let cleanedUserText = userText;
@@ -214,6 +243,10 @@ export async function generateReply(channelId, userText, guildId = null) {
 
   let reportedIssue = "";
   const retryDelays = [5000, 15000];
+
+  // Log Raw AI Input before querying models
+  logger.log(`\n[Raw AI Input]:\n${formatContentsForLog(contents)}\n--------------------------`);
+  logger.debug(`\n[Raw AI System Instruction]:\n${SYSTEM_PROMPT}\n--------------------------`);
 
   for (const model of modelList) {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -321,7 +354,7 @@ export async function generateReply(channelId, userText, guildId = null) {
  * Sends the same prompt to multiple models in parallel for side-by-side comparison.
  * Returns an array of { model, reply, error, durationMs } objects.
  */
-export async function generateComparisonReply(channelId, userText, guildId = null) {
+export async function generateComparisonReply(channelId, userText, guildId = null, guild = null) {
   const cfg = loadConfig();
   const compareModels = resolveModelList(cfg.model_compare?.models || []);
 
@@ -331,12 +364,23 @@ export async function generateComparisonReply(channelId, userText, guildId = nul
 
   const history = getHistory(channelId);
   const contents = history.map((entry) => {
-    const parts = [{ text: entry.text }];
+    const rxStr = formatReactionsString(entry.reactions);
+    const parts = [{ text: `${entry.text}${rxStr}` }];
+
     if (entry.attachments && entry.attachments.length > 0) {
       for (const att of entry.attachments) {
+        if (att.isUnsupported) {
+          parts.push({
+            text: `[Attached file: ${att.filename || "unknown"} (unsupported binary format, cannot be read)]`
+          });
+          continue;
+        }
         try {
-          if (fs.existsSync(att.filepath)) {
+          if (att.filepath && fs.existsSync(att.filepath)) {
             const buffer = fs.readFileSync(att.filepath);
+            parts.push({
+              text: `[File attached: ${att.filename || path.basename(att.filepath)}]`
+            });
             parts.push({
               inlineData: { data: buffer.toString("base64"), mimeType: att.mimeType }
             });
@@ -349,15 +393,18 @@ export async function generateComparisonReply(channelId, userText, guildId = nul
     return { role: entry.role, parts };
   });
 
-  const memoryBlock = guildId ? buildMemoryBlock(guildId) : "";
+  const memoryBlock = buildMemoryBlock(guildId);
   const savedImages = getSavedImagesList();
   const imagesBlock = savedImages.length > 0
     ? `\n\n--- YOUR SAVED IMAGES ---\nYou currently have these images saved in your library:\n${savedImages.map(f => `- ${f}`).join("\n")}\nYou can send them using [SEND_IMG: name].\n--- END SAVED IMAGES ---`
     : "\n\n--- YOUR SAVED IMAGES ---\nYour library is empty. You can save images using [SAVE_IMG: url | name].\n--- END SAVED IMAGES ---";
+  const emojisBlock = guild ? buildGuildEmojisBlock(guild) : "";
 
-  const SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + memoryBlock + imagesBlock;
+  const SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + memoryBlock + imagesBlock + emojisBlock;
 
   logger.log(`[Compare] Starting comparison across ${compareModels.length} models: ${compareModels.join(", ")}`);
+  logger.log(`\n[Raw AI Input]:\n${formatContentsForLog(contents)}\n--------------------------`);
+  logger.debug(`\n[Raw AI System Instruction]:\n${SYSTEM_PROMPT}\n--------------------------`);
 
   const promises = compareModels.map(async (model) => {
     const start = Date.now();
@@ -369,10 +416,12 @@ export async function generateComparisonReply(channelId, userText, guildId = nul
       });
       const durationMs = Date.now() - start;
       logger.debug(`[Compare] ${model} responded in ${durationMs}ms`);
+      logger.log(`\n[Raw AI Response (${model})]:\n${replyText}\n--------------------------`);
       return { model, reply: replyText || "(empty response)", error: null, durationMs };
     } catch (err) {
       const durationMs = Date.now() - start;
       logger.error(`[Compare] ${model} failed (${durationMs}ms):`, err.message);
+      logger.log(`\n[Raw AI Response (${model})]:\n[ERROR: ${err.message}]\n--------------------------`);
       return { model, reply: null, error: err.message, durationMs };
     }
   });
@@ -385,16 +434,21 @@ export async function generateComparisonReply(channelId, userText, guildId = nul
  * Used for greetings, scheduled messages, etc.
  * @param {string} prompt - The prompt text
  * @param {string|null} guildId - Optional guild ID for memory context
+ * @param {import("discord.js").Guild|null} guild - Optional Discord guild object
  * @returns {Promise<string>} The AI reply text
  */
-export async function generatePromptReply(prompt, guildId = null) {
+export async function generatePromptReply(prompt, guildId = null, guild = null) {
   const cfg = loadConfig();
   const modelList = getTaskModels("NORMAL", cfg);
 
-  const memoryBlock = guildId ? buildMemoryBlock(guildId) : "";
-  const SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + memoryBlock;
+  const memoryBlock = buildMemoryBlock(guildId);
+  const emojisBlock = guild ? buildGuildEmojisBlock(guild) : "";
+  const SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + memoryBlock + emojisBlock;
 
   const contents = [{ role: "user", parts: [{ text: prompt }] }];
+
+  logger.log(`\n[Raw AI Input]:\n[user]: ${prompt}\n--------------------------`);
+  logger.debug(`\n[Raw AI System Instruction]:\n${SYSTEM_PROMPT}\n--------------------------`);
 
   // 1. Try primary key
   for (const model of modelList) {
@@ -404,7 +458,10 @@ export async function generatePromptReply(prompt, guildId = null) {
         temperature: 1.0,
         maxOutputTokens: 400,
       });
-      if (replyText) return replyText;
+      if (replyText) {
+        logger.log(`\n[Raw AI Response]:\n${replyText}\n--------------------------`);
+        return replyText;
+      }
     } catch (err) {
       logger.warn(`[PromptReply] Model ${model} failed:`, err.message);
     }
@@ -422,7 +479,10 @@ export async function generatePromptReply(prompt, guildId = null) {
             temperature: 1.0,
             maxOutputTokens: 400,
           });
-          if (replyText) return replyText;
+          if (replyText) {
+            logger.log(`\n[Raw AI Response]:\n${replyText}\n--------------------------`);
+            return replyText;
+          }
         } catch (err) {
           logger.warn(`[PromptReply] Donated key #${k + 1} failed on ${model}:`, err.message);
         }

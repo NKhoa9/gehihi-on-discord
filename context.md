@@ -19,9 +19,13 @@ Welcome to the Gemini Discord Bot codebase! This document provides a comprehensi
 - `system_prompt.txt` — The core system prompt containing instructions and persona for the AI.
 - `memories.json` — Persistent AI memory storage (per-guild, auto-generated, gitignored).
 - `src/ai/models.js` — Model registry management, series resolution, category and series manipulation.
-- `src/ai/router.js` — Dynamic prompt classification, model fallback router, comparison mode, and one-shot prompt generation.
+- `src/ai/router.js` — Dynamic prompt classification, model fallback router, comparison mode, one-shot prompt generation, and RAW AI input/output logging.
 - `src/core/channel_control.js` — Per-channel AI enable/disable management.
 - `src/core/scheduler.js` — Autonomous scheduled tasks (random intervals or fixed daily UTC times).
+- `src/core/trigger.js` — Smart contextual response trigger algorithm (beta) vs classic random appear rate.
+- `src/core/emojis.js` — Server custom emoji awareness, prompt injection, and bidirectional name/ID resolution.
+- `src/core/memory.js` — Persistent per-guild memory tagging (`[MEMORY:ADD]`, `[MEMORY:EDIT]`, `[MEMORY:DELETE]`).
+- `src/media/attachments.js` — Dynamic file attachment handling: accepts any image/audio/video/PDF/code/text file without a hardcoded whitelist, with binary detection fallback.
 - `lib/ran_img/` — Library of random images the bot can send via `[IMG]` tag. Persists across restarts.
 - `lib/gen_img/` — AI-generated images stored here automatically. Gitignored.
 - `.env` — Environment secrets (DISCORD_TOKEN, GEMINI_API_KEY).
@@ -35,7 +39,8 @@ All tunable settings live in `config.json` for quick changes without touching co
 - `debug_logging` — Toggle ultra-detailed step-by-step debug logging (default: `true`).
 - `show_errors_in_chat` — If `false`, massive model fallback errors are hidden from the Discord chat and replaced with a compact warning, keeping chat clean (default: `false`).
 - `max_history` — Messages to keep in memory per channel (default: 30).
-- `random_appear_rate` — Probability (0–1) of the bot spontaneously responding to unmentioned messages (default: 0.2).
+- `response_mode` — Response trigger strategy: `"smart"` (contextual momentum, bot name boost, anti-burst fatigue) or `"random"` (classic flat random dice) (default: `"smart"`).
+- `random_appear_rate` — Probability (0–1) of the bot spontaneously responding to unmentioned messages in random mode, or base rate in smart mode (default: 0.2).
 - `silence_duration_ms` — Voice silence threshold before the bot considers the user done speaking (default: 200).
 - `voice_name` — Gemini Live voice persona (e.g., "Aoede", "Charon", "Fenrir", "Kore", "Puck").
 - `model_mode` — Default model selection preference (`flash` vs `flash-lite`).
@@ -50,11 +55,12 @@ Both `bot.js` and `voice.js` read from this file dynamically on each execution, 
 
 ### 2. Intelligent Model Routing & Provider Abstraction
 To optimize API usage and provide the best answers, the bot uses a dynamic model router and an abstract `AIProvider`.
-- **AI Abstraction**: The core generation logic is routed through an `AIProvider` class interface. This allows the bot to easily swap out Gemini for other future AI brands by implementing a new provider subclass.
+- **AI Abstraction**: The core generation logic is routed through an `AIProvider` class interface. Swappable providers.
 - **Classification**: Before answering, if a prompt is >10 characters, it uses a fast, lightweight call (`classifyPrompt`) to categorize the prompt into `SEARCH`, `THINKING`, or `NORMAL`.
 - **Model Series & Pools (`models.json`)**: Models are grouped into series (e.g., `flash-lite-series`, `flash-series`, `gemma-series`, or custom series). Task categories reference series or concrete model names.
 - **Auto-Fallback & Retries**: The bot attempts models in priority order, retrying on 429 errors with exponential backoff before failing over to fallback models and donated keys.
 - **Side-by-Side Model Comparison Mode**: Admins can enable comparison mode (`/compare`) with a list of models (`/compare_add`, `/compare_remove`, `/compare_models`). In this mode, the bot queries all selected models simultaneously and sends side-by-side color-coded embeds.
+- **Raw Input & Output Logging**: Complete logging of the raw AI input (conversation turns, roles, attachments) and raw AI response (before tag stripping) to console and `bot.log`. System instruction is captured at DEBUG level.
 
 ### 3. Custom Model Series & Task Categories
 Users and admins have complete flexibility over model categorization:
@@ -91,23 +97,49 @@ The AI has full control over its formatting via the `[EMBED]` tag mechanism.
 - The system prompt instructs the AI to use `[EMBED]` when it wants to send structured, complex, or long information.
 - Supports both parsed JSON custom embeds and standard auto-wrapped Google Blue embeds.
 
-### 8. Autonomous Interaction & Personality
-The bot behaves like a true participant in the server rather than just a command-response tool:
-- **Contextual Awareness**: Formatted history entries with ISO timestamps, user IDs, and reply contexts.
-- **Probability Gate**: Configurable via `random_appear_rate` for unmentioned messages; always responds when mentioned or replied to.
-- **Dynamic Reactions**: Supports `[REACT: emoji]`, `[IGNORE]`, and multimedia tags (`[SEND_IMG]`, `[SEARCH_IMG]`, `[IMGGEN]`, `[VIDGEN]`).
+### 8. Response Trigger Algorithms (`trigger.js`)
+Supports two trigger modes, switchable via `/config setting: response_mode value: smart|random`:
+- **Direct Triggers**: Always responds to `@mentions` and replies to the bot's own messages.
+- **Smart Dynamic Mode (`"smart"`)**:
+  - Suppresses bot command prefixes (`!`, `/`, `?`, `$`, `-`, etc.) and short noise messages.
+  - High probability boost (0.85+) when the bot's name or nickname is mentioned anywhere in the message.
+  - Conversation momentum boost (decays over a 90-second active window) so conversations flow naturally without needing constant `@mentions`.
+  - Question detection boost (+0.20) for inquisitive messages.
+  - Anti-burst fatigue protection prevents spamming when responding unprompted in quick succession.
+- **Classic Random Mode (`"random"`)**: Uses flat `Math.random() < random_appear_rate`.
 
-### 9. Persistent AI Memory System
-Persistent AI memory stored per-guild in `memories.json`:
-- Autonomous tags: `[MEMORY:ADD]`, `[MEMORY:EDIT]`, `[MEMORY:DELETE]`.
-- User viewing: `/memories` (ephemeral).
-- Admin reset: `/reset_memory`.
+### 9. Server Custom Emojis & Message Reactions Support (`emojis.js`, `history.js`)
+- **Server Emoji Awareness**: Injects a compact list of the server's custom emojis (`<:name:id> (:name:)`) into the system prompt. Handled with `GuildExpressions` intent and automatic guild cache pre-fetching on startup and incoming messages.
+- **Bidirectional Resolution**: The AI can write custom emojis as `:emoji_name:` or `<:name:id>` in text responses. Standalone `:emoji_name:` tags are resolved to Discord's custom emoji tags before sending.
+- **Reaction Resolution & Sanitization**: The AI can react using `[REACT: :emoji_name:]`, `[REACT: emoji_name]`, or `[REACT: <:name:id>]`. Resolves directly to the custom emoji ID for `message.react()`. Standard Unicode emojis (`🍎`) remain fully supported. Defensively strips accidental reaction counts (e.g. `x1`, `x2`) and safely ignores non-existent custom emojis to prevent Discord API `Unknown Emoji` errors.
+- **Reaction Visibility on Messages**: Messages in the AI context include reaction summaries (e.g. `[reactions: 👍 x2, 🔥 x1]`). Tracked in real time via `GuildMessageReactions` intent, `messageReactionAdd`/`Remove` listeners, and pre-generation cache synchronization.
 
-### 10. Voice Channel Integration (Gemini Live)
+### 10. Universal File Attachment Handling (`attachments.js`)
+- **No Hardcoded Extension Whitelist**: Automatically accepts any media, document, config, or code file (`.rs`, `.go`, `.py`, `.c`, `.cpp`, `.ts`, `.toml`, `.yaml`, `.env`, etc.).
+- **Dynamic Type Detection**:
+  - Image, audio, video, and PDF files are passed directly with their media MIME types.
+  - Non-media files are inspected via UTF-8 null-byte analysis (`isTextBuffer`); valid text/code files are converted to `text/plain` and fed into Gemini inline data with their filename.
+  - Unsupported compiled binaries (e.g. `.exe`, `.zip`, `.dll`) are detected and rejected gracefully with an in-chat indicator instead of causing Gemini API 400 errors.
+
+### 11. Persistent AI Memory Classification System (`memory.js`)
+Persistent AI memory stored in `memories.json` with a two-tier classification:
+- **Universal Memories** (`_universal`): Global facts, skills, learned capabilities, and general knowledge that apply across all servers and DMs. Injected as `[UNIVERSAL FACTS & SKILLS]` in prompts.
+- **Server-Specific Memories** (`<guildId>`): Local server context, member nicknames, channel lore, and running jokes to ensure natural conversation flow. Injected as `[SERVER-SPECIFIC CONTEXT]` in prompts.
+- **Autonomous Tags**:
+  - `[MEMORY:ADD:UNIVERSAL text]` or `[MEMORY:ADD UNIVERSAL: text]` — Adds to universal memory.
+  - `[MEMORY:ADD:SERVER text]` or `[MEMORY:ADD SERVER: text]` — Adds to server-specific memory.
+  - `[MEMORY:ADD text]` — Defaults to server memory if in a guild, or universal if in a DM.
+  - `[MEMORY:EDIT #id text]` — Edits memory by ID across server and universal stores.
+  - `[MEMORY:DELETE #id (reason)]` — Deletes memory by ID across server and universal stores.
+- **Commands**:
+  - `/memories [scope: all|universal|server]` — Ephemeral view of AI memories segregated by scope.
+  - `/reset_memory [scope: server|universal|all]` — [Admin] Selectively reset server memories, universal memories, or all memories.
+
+### 11. Voice Channel Integration (Gemini Live)
 - Real-time voice conversations using Gemini Live WebSocket and Opus audio pipeline.
 - Commands: `/join` and `/leave`.
 
-### 11. Admin, Moderation & Utility Commands
+### 12. Admin, Moderation & Utility Commands
 **Admin Commands (Requires User ID to be in `ADMINS` inside `.env`)**:
 - `/reset_memory` — Completely wipes the AI's saved memories for the server.
 - `/pause_ai` — Toggles pausing/unpausing the AI from generating text responses globally.
@@ -135,4 +167,3 @@ Persistent AI memory stored per-guild in `memories.json`:
 - `DISCORD_TOKEN`: Your Discord bot token (required).
 - `GEMINI_API_KEY`: Your Google Gemini API key (required).
 - `ADMINS`: Comma-separated Discord User IDs authorized for admin commands.
-
