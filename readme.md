@@ -1,6 +1,6 @@
 A random Discord bot created by a random person with the help of AIs (yeah)
 
-Join my server to chat with the bot: https://discord.gg/CM6CSpCzXu
+Join my server to chat with the bot: https://discord.gg/cqjdsNnApw
 
 # A multi-purpose bot
 Supports Discord moderation commands like: ban, kick, timeout, purge, etc...
@@ -15,18 +15,8 @@ Supports Discord moderation commands like: ban, kick, timeout, purge, etc...
 
 # Setup
 
-1. Clone the repository:
-
-```bash
-cd "D:\!Khoa\Resources\!Code\gemini bot"
-```
-
-2. Install dependencies:
-
-```bash
-npm install
-```
-
+1. Clone the repository
+2. Install dependencies
 3. Create a `.env` file in the root directory with the following variables:
 
 ```env
