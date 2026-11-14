@@ -8,6 +8,11 @@
   "silence_duration_ms": 200,
   "voice_name": "Aoede",
   "model_mode": "flash-lite",
+  "thinking_effort": {
+    "mode": "global",
+    "global": "medium",
+    "local": {}
+  },
   "models": {
     "classifier": [
       "flash-lite-series"
@@ -43,6 +48,7 @@
     ]
   },
   "greet_new_members": true,
+  "feedback_system": true,
   "disabled_channels": [],
   "scheduled_tasks": []
 }

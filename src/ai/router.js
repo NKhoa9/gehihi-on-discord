@@ -9,9 +9,48 @@ import { buildGuildEmojisBlock } from "../core/emojis.js";
 import { AIProvider, GeminiProvider, createGeminiProvider } from "./provider.js";
 import { getDonatedApiKeys } from "../core/keys.js";
 import { getTaskModels, resolveModelList, loadModelRegistry } from "./models.js";
+import { buildFeedbackBlock } from "../core/feedback.js";
 
 const LIB_GEN_IMG = path.resolve("lib/gen_img");
 const LIB_GEN_VID = path.resolve("lib/gen_vid");
+
+/**
+ * Resolves the thinking effort level ("low" | "medium" | "high") for a model.
+ * - Global mode: returns the global thinking effort.
+ * - Local mode: returns the model-specific effort if set, otherwise falls back to global.
+ * @param {string} model
+ * @param {object} cfg
+ * @returns {"low" | "medium" | "high"}
+ */
+export function getThinkingEffort(model, cfg) {
+  const te = cfg?.thinking_effort;
+  if (!te) return "medium";
+  const mode = te.mode || "global";
+  if (mode === "local" && te.local && te.local[model]) {
+    return te.local[model].toLowerCase();
+  }
+  return (te.global || "medium").toLowerCase();
+}
+
+/**
+ * Returns thinkingConfig object for @google/genai based on the model and thinking effort setting.
+ * Models that do not support thinking (e.g. Gemma or non-Gemini) return empty object.
+ * Gemini 2.5 models use thinkingBudget (mapped from effort).
+ * Gemini 3+ models use thinkingLevel ("LOW" | "MEDIUM" | "HIGH").
+ * @param {string} model
+ * @param {object} cfg
+ * @returns {{ thinkingConfig: object } | {}}
+ */
+export function getThinkingConfig(model, cfg) {
+  const m = (model || "").toLowerCase();
+  if (!m.startsWith("gemini")) return {};
+  const effort = getThinkingEffort(model, cfg);
+  if (m.includes("2.5")) {
+    const budgetMap = { low: 1024, medium: 4096, high: 16384 };
+    return { thinkingConfig: { thinkingBudget: budgetMap[effort] || 4096 } };
+  }
+  return { thinkingConfig: { thinkingLevel: effort.toUpperCase() } };
+}
 
 export const aiProvider = new GeminiProvider(process.env.GEMINI_API_KEY);
 const MAX_RETRIES = 2;
@@ -169,12 +208,13 @@ export async function generateReply(channelId, userText, guildId = null, guild =
     : "\n\n--- YOUR SAVED IMAGES ---\nYour library is empty. You can save images using [SAVE_IMG: url | name].\n--- END SAVED IMAGES ---";
   const emojisBlock = guild ? buildGuildEmojisBlock(guild) : "";
 
-  const SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + memoryBlock + imagesBlock + emojisBlock;
+  const cfg = loadConfig();
+  const feedbackBlock = buildFeedbackBlock(channelId, cfg);
+  const SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + memoryBlock + imagesBlock + emojisBlock + feedbackBlock;
 
   let taskType = "NORMAL";
   let cleanedUserText = userText;
 
-  const cfg = loadConfig();
   const registry = loadModelRegistry();
   const allCategories = { ...(cfg.models || {}), ...registry };
 
@@ -255,6 +295,7 @@ export async function generateReply(channelId, userText, guildId = null, guild =
           systemInstruction: SYSTEM_PROMPT,
           temperature: 0.7,
           maxOutputTokens: 1000,
+          ...getThinkingConfig(model, cfg),
         };
         if (useSearch) config.tools = [{ googleSearch: {} }];
         else if (taskType === "NORMAL") {
@@ -268,7 +309,8 @@ export async function generateReply(channelId, userText, guildId = null, guild =
           finalReplyText = reportedIssue + finalReplyText;
         }
 
-        return { text: finalReplyText, model };
+        const thinkingEffort = getThinkingEffort(model, cfg);
+        return { text: finalReplyText, model, thinkingEffort };
       } catch (err) {
         const is429 = err?.message?.includes('"code":429') || err?.message?.includes("RESOURCE_EXHAUSTED") || err?.message?.includes("QUOTA_EXCEEDED") || err?.status === 429;
         if (is429 && attempt < MAX_RETRIES) {
@@ -287,18 +329,21 @@ export async function generateReply(channelId, userText, guildId = null, guild =
     for (const model of modelsDefault) {
       try {
         logger.debug(`[Router] Attempting ultimate fallback model: ${model}`);
-        const replyText = await aiProvider.generateText(model, contents, {
+        const fallbackConfig = {
           systemInstruction: SYSTEM_PROMPT,
           temperature: 1.0,
           maxOutputTokens: 600,
-        });
+          ...getThinkingConfig(model, cfg),
+        };
+        const replyText = await aiProvider.generateText(model, contents, fallbackConfig);
         let finalReplyText = replyText || "hmm, I got nothing 🤔";
 
         if (reportedIssue && cfg.show_errors_in_chat !== false) {
           finalReplyText = reportedIssue + finalReplyText;
         }
 
-        return { text: finalReplyText, model };
+        const thinkingEffort = getThinkingEffort(model, cfg);
+        return { text: finalReplyText, model, thinkingEffort };
       } catch (err) {
         logger.error(`Fallback default model ${model} failed. Error:`, err.message);
         reportedIssue += `⚠️ *(Auto-Fallback: \`${model}\` failed...)*\n\n`;
@@ -318,20 +363,22 @@ export async function generateReply(channelId, userText, guildId = null, guild =
 
       for (const model of fallbackModels) {
         try {
-          const config = {
+          const donatedConfig = {
             systemInstruction: SYSTEM_PROMPT,
             temperature: taskType === "NORMAL" ? 1.0 : 0.7,
             maxOutputTokens: taskType === "NORMAL" ? 600 : 1000,
+            ...getThinkingConfig(model, cfg),
           };
-          if (useSearch) config.tools = [{ googleSearch: {} }];
+          if (useSearch) donatedConfig.tools = [{ googleSearch: {} }];
 
-          const replyText = await tempProvider.generateText(model, contents, config);
+          const replyText = await tempProvider.generateText(model, contents, donatedConfig);
           let finalReplyText = replyText || "hmm, I got nothing 🤔";
           logger.log(`[Router] Donated key #${k + 1} succeeded on ${model}`);
           if (reportedIssue && cfg.show_errors_in_chat !== false) {
             finalReplyText = reportedIssue + finalReplyText;
           }
-          return { text: finalReplyText, model };
+          const thinkingEffort = getThinkingEffort(model, cfg);
+          return { text: finalReplyText, model, thinkingEffort };
         } catch (err) {
           const is429 = err?.message?.includes('"code":429') || err?.message?.includes("RESOURCE_EXHAUSTED") || err?.message?.includes("QUOTA_EXCEEDED") || err?.status === 429;
           logger.warn(`[Router] Donated key #${k + 1} failed on ${model}: ${err.message}`);

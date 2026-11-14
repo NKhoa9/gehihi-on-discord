@@ -13,7 +13,8 @@ import { shouldRespond, recordBotReply } from "./src/core/trigger.js";
 import { pushHistory, clearHistory, updateHistoryReactions, getHistory } from "./src/core/history.js";
 import { cacheAttachments } from "./src/media/attachments.js";
 import { getSavedImagesList, getSavedImage, downloadImageToLib, searchGoogleImage } from "./src/media/images.js";
-import { generateImage, generateVideo, generateReply, generateComparisonReply, generatePromptReply } from "./src/ai/router.js";
+import { generateImage, generateVideo, generateReply, generateComparisonReply, generatePromptReply, getThinkingEffort } from "./src/ai/router.js";
+import { setLatestFeedback, updateFeedbackScoreFromMessage, clearFeedback, getLatestFeedback } from "./src/core/feedback.js";
 import { addKey, removeKey, getAllKeys } from "./src/core/keys.js";
 import { isChannelDisabled, disableChannel, enableChannel, getDisabledChannels } from "./src/core/channel_control.js";
 import { getScheduledTasks, addScheduledTask, removeScheduledTask, toggleScheduledTask, startAllScheduledTasks, scheduleDailyTask, scheduleRandomTask } from "./src/core/scheduler.js";
@@ -131,7 +132,10 @@ const commands = [
           { name: 'debug_logging', value: 'debug_logging' },
           { name: 'show_errors_in_chat', value: 'show_errors_in_chat' },
           { name: 'greet_new_members', value: 'greet_new_members' },
-          { name: 'greet_channel_id', value: 'greet_channel_id' }
+          { name: 'greet_channel_id', value: 'greet_channel_id' },
+          { name: 'thinking_mode', value: 'thinking_mode' },
+          { name: 'thinking_effort', value: 'thinking_effort' },
+          { name: 'feedback_system', value: 'feedback_system' }
         ))
     .addStringOption(option => option.setName('value').setDescription('The new value (or "none" to clear)').setRequired(true)),
   new SlashCommandBuilder()
@@ -394,6 +398,49 @@ const commands = [
     .setName("category_delete")
     .setDescription("[Admin] Delete a custom task category from config.json")
     .addStringOption(option => option.setName('name').setDescription('Category name to delete').setRequired(true)),
+  // ── Thinking Effort Commands ────────────────────────────────────────────
+  new SlashCommandBuilder()
+    .setName("thinking_set")
+    .setDescription("[Admin] Set thinking effort level (low, medium, high)")
+    .addStringOption(option =>
+      option.setName('effort')
+        .setDescription('Thinking effort level')
+        .setRequired(true)
+        .addChoices(
+          { name: 'low', value: 'low' },
+          { name: 'medium', value: 'medium' },
+          { name: 'high', value: 'high' }
+        ))
+    .addStringOption(option =>
+      option.setName('model')
+        .setDescription('Specific model name (for local mode; omit for global setting)')
+        .setRequired(false)
+        .setAutocomplete(true)),
+  new SlashCommandBuilder()
+    .setName("thinking_mode")
+    .setDescription("[Admin] Switch thinking effort mode (global vs local)")
+    .addStringOption(option =>
+      option.setName('mode')
+        .setDescription('Mode: global (1 setting for all) or local (each model uses its own setting)')
+        .setRequired(true)
+        .addChoices(
+          { name: 'global (1 setting for all models)', value: 'global' },
+          { name: 'local (each model uses a different setting)', value: 'local' }
+        )),
+  new SlashCommandBuilder()
+    .setName("thinking_check")
+    .setDescription("[Admin] View the current thinking effort configuration"),
+  new SlashCommandBuilder()
+    .setName("feedback")
+    .setDescription("[Admin] Toggle or check the AI response feedback reaction feature")
+    .addStringOption(option =>
+      option.setName('enabled')
+        .setDescription('Turn feedback system on or off')
+        .setRequired(false)
+        .addChoices(
+          { name: 'on (enable ⬆️/⬇️ reactions)', value: 'on' },
+          { name: 'off (disable feedback reactions)', value: 'off' }
+        )),
 ].map((cmd) => cmd.toJSON());
 
 async function registerCommands() {
@@ -516,7 +563,7 @@ async function sendScheduledMessage(channelId, guildId, prompt) {
 client.once("ready", async () => {
   logger.log(`🤖 Logged in as ${client.user.tag}`);
   logger.log(`📡 Connected to ${client.guilds.cache.size} server(s)`);
-  client.user.setActivity("your RAMs ✨", { type: ActivityType.Playing });
+  client.user.setActivity("Brainrot AI slop ✨", { type: ActivityType.Playing });
   await registerCommands();
 
   // Pre-fetch custom emojis for all connected guilds
@@ -578,7 +625,7 @@ client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
   if (message.guild && message.guild.emojis.cache.size === 0) {
-    await message.guild.emojis.fetch().catch(() => {});
+    await message.guild.emojis.fetch().catch(() => { });
   }
 
   const userText = cleanContent(message);
@@ -728,6 +775,10 @@ client.on("messageCreate", async (message) => {
 
     const replyText = typeof replyResult === "object" ? replyResult.text : replyResult;
     const modelUsed = typeof replyResult === "object" ? replyResult.model : null;
+    const thinkingEffort = typeof replyResult === "object" ? replyResult.thinkingEffort : null;
+    const modelFooter = modelUsed && modelUsed !== "none"
+      ? (thinkingEffort ? `${modelUsed} (${thinkingEffort})` : modelUsed)
+      : null;
 
     let finalReply = (replyText || "").trim();
     logger.log(`\n[Raw AI Response]:\n${finalReply}\n--------------------------`);
@@ -859,7 +910,7 @@ client.on("messageCreate", async (message) => {
     };
     if (attachments.length > 0) replyOpts.files = attachments;
 
-    const hasModelFootnote = modelUsed && modelUsed !== "none";
+    const hasModelFootnote = !!modelFooter;
 
     let sentMsg = null;
     if (shouldEmbed) {
@@ -881,11 +932,11 @@ client.on("messageCreate", async (message) => {
             }
             const footerText = embedObj.footer?.text ? String(embedObj.footer.text).substring(0, 2000) : null;
             if (footerText && hasModelFootnote) {
-              embed.setFooter({ text: `${footerText} •  ${modelUsed}` });
+              embed.setFooter({ text: `${footerText} •  ${modelFooter}` });
             } else if (footerText) {
               embed.setFooter({ text: footerText });
             } else if (hasModelFootnote) {
-              embed.setFooter({ text: ` ${modelUsed}` });
+              embed.setFooter({ text: ` ${modelFooter}` });
             }
             sentMsg = await message.reply({ ...replyOpts, embeds: [embed] });
             isParsedJson = true;
@@ -899,7 +950,7 @@ client.on("messageCreate", async (message) => {
           for (let i = 0; i < chunks.length; i++) {
             const embed = new EmbedBuilder().setColor(0x4285F4).setDescription(chunks[i]);
             if (hasModelFootnote && i === chunks.length - 1) {
-              embed.setFooter({ text: ` ${modelUsed}` });
+              embed.setFooter({ text: ` ${modelFooter}` });
             }
             const opts = i === 0 ? { ...replyOpts, embeds: [embed] } : { embeds: [embed], allowedMentions: replyOpts.allowedMentions };
             const m = await message.reply(opts);
@@ -907,17 +958,17 @@ client.on("messageCreate", async (message) => {
           }
         } else {
           const embed = new EmbedBuilder().setColor(0x4285F4).setDescription(finalReply);
-          if (hasModelFootnote) embed.setFooter({ text: ` ${modelUsed}` });
+          if (hasModelFootnote) embed.setFooter({ text: ` ${modelFooter}` });
           sentMsg = await message.reply({ ...replyOpts, embeds: [embed] });
         }
       }
     } else {
       if (hasModelFootnote && finalReply) {
-        finalReply += `\n-#  ${modelUsed}`;
+        finalReply += `\n-#  ${modelFooter}`;
       }
       if (!finalReply && attachments.length > 0) {
         if (hasModelFootnote) {
-          sentMsg = await message.reply({ ...replyOpts, content: `-#  ${modelUsed}` });
+          sentMsg = await message.reply({ ...replyOpts, content: `-#  ${modelFooter}` });
         } else {
           sentMsg = await message.reply(replyOpts);
         }
@@ -940,6 +991,13 @@ client.on("messageCreate", async (message) => {
       const hist = getHistory(message.channel.id);
       const lastModel = [...hist].reverse().find(e => e.role === "model" && !e.messageId);
       if (lastModel) lastModel.messageId = sentMsg.id;
+
+      // Feedback reactions (⬆️ and ⬇️) for AI response rating
+      const currentConfig = loadConfig();
+      if (currentConfig.feedback_system !== false) {
+        setLatestFeedback(message.channel.id, sentMsg.id);
+        sentMsg.react("⬆️").then(() => sentMsg.react("⬇️")).catch(() => { });
+      }
     }
   } catch (err) {
     logger.error("Error handling message:", err);
@@ -968,12 +1026,39 @@ async function handleReactionUpdate(reaction) {
     }
 
     updateHistoryReactions(channelId, messageId, reactions);
+
+    // Update feedback score if this is the latest bot response in this channel
+    updateFeedbackScoreFromMessage(msg);
   } catch (err) {
     logger.debug("[Reactions] Failed to update reaction in history:", err.message);
   }
 }
 
-client.on("messageReactionAdd", handleReactionUpdate);
+client.on("messageReactionAdd", async (reaction, user) => {
+  // Ensure arrow up (⬆️) and arrow down (⬇️) are mutually exclusive per user
+  if (user && !user.bot) {
+    try {
+      if (reaction.partial) await reaction.fetch();
+      if (reaction.message.partial) await reaction.message.fetch();
+
+      const emojiName = reaction.emoji.name;
+      const isUp = emojiName === "⬆️" || emojiName === "⬆";
+      const isDown = emojiName === "⬇️" || emojiName === "⬇";
+
+      if (isUp || isDown) {
+        const oppositeNames = isUp ? ["⬇️", "⬇"] : ["⬆️", "⬆"];
+        const oppositeReact = reaction.message.reactions.cache.find(r => oppositeNames.includes(r.emoji.name));
+        if (oppositeReact) {
+          await oppositeReact.users.remove(user.id).catch(() => {});
+        }
+      }
+    } catch (err) {
+      logger.debug("[Feedback] Error enforcing mutually exclusive feedback reactions:", err.message);
+    }
+  }
+
+  await handleReactionUpdate(reaction);
+});
 client.on("messageReactionRemove", handleReactionUpdate);
 
 client.on("interactionCreate", async (interaction) => {
@@ -990,6 +1075,12 @@ client.on("interactionCreate", async (interaction) => {
         const filtered = list.filter(c => c.toLowerCase().includes(focusedOption.value.toLowerCase())).slice(0, 25);
         return await interaction.respond(filtered.map(c => ({ name: c, value: c })));
       }
+      if (focusedOption.name === "model" && interaction.commandName === "thinking_set") {
+        const registry = loadModelRegistry();
+        const allModels = [...new Set(Object.values(registry).flat())];
+        const filtered = allModels.filter(m => m.toLowerCase().includes(focusedOption.value.toLowerCase())).slice(0, 25);
+        return await interaction.respond(filtered.map(m => ({ name: m, value: m })));
+      }
     } catch (err) {
       logger.error("[Autocomplete] Error:", err.message);
     }
@@ -1004,12 +1095,14 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.commandName === "clear") {
     clearHistory(interaction.channelId);
+    clearFeedback(interaction.channelId);
     await interaction.reply({ content: "🧹 Memory wiped for this channel! Fresh start.", flags: MessageFlags.Ephemeral });
   }
 
   if (interaction.commandName === "ping") {
     const latency = Math.round(client.ws.ping);
-    await interaction.reply({ content: `🏓 Pong! \`${latency}ms\``, flags: MessageFlags.Ephemeral });
+    const pauseStatus = isAIPaused ? "⏸️ Paused (globally)" : "▶️ Active";
+    await interaction.reply({ content: `🏓 Pong! \`${latency}ms\` • AI Status: **${pauseStatus}**`, flags: MessageFlags.Ephemeral });
   }
 
   if (interaction.commandName === "memories") {
@@ -1105,7 +1198,7 @@ client.on("interactionCreate", async (interaction) => {
       } else if (setting === "random_appear_rate") {
         newValue = parseFloat(valueStr);
         if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid number (e.g. 0.1).", flags: MessageFlags.Ephemeral });
-      } else if (setting === "logging" || setting === "debug_logging" || setting === "show_errors_in_chat" || setting === "greet_new_members") {
+      } else if (setting === "logging" || setting === "debug_logging" || setting === "show_errors_in_chat" || setting === "greet_new_members" || setting === "feedback_system") {
         const lower = valueStr.toLowerCase();
         if (lower === "true" || lower === "on" || lower === "1") newValue = true;
         else if (lower === "false" || lower === "off" || lower === "0") newValue = false;
@@ -1122,6 +1215,34 @@ client.on("interactionCreate", async (interaction) => {
           return interaction.reply({ content: "❌ Value for `model_mode` must be `flash` or `flash-lite`.", flags: MessageFlags.Ephemeral });
         }
         newValue = lower;
+      } else if (setting === "thinking_mode") {
+        const lower = valueStr.toLowerCase();
+        if (lower !== "global" && lower !== "local") {
+          return interaction.reply({ content: "❌ Value for `thinking_mode` must be `global` or `local`.", flags: MessageFlags.Ephemeral });
+        }
+        const currentConfig = loadConfig();
+        if (!currentConfig.thinking_effort) currentConfig.thinking_effort = { mode: "global", global: "medium", local: {} };
+        currentConfig.thinking_effort.mode = lower;
+        try {
+          fs.writeFileSync("config.json", JSON.stringify(currentConfig, null, 2), "utf-8");
+          return interaction.reply({ content: `✅ Config updated: \`thinking_mode\` is now \`${lower}\`.`, flags: MessageFlags.Ephemeral });
+        } catch (err) {
+          return interaction.reply({ content: `❌ Failed to save config: ${err.message}`, flags: MessageFlags.Ephemeral });
+        }
+      } else if (setting === "thinking_effort") {
+        const lower = valueStr.toLowerCase();
+        if (!["low", "medium", "high"].includes(lower)) {
+          return interaction.reply({ content: "❌ Value for `thinking_effort` must be `low`, `medium`, or `high`.", flags: MessageFlags.Ephemeral });
+        }
+        const currentConfig = loadConfig();
+        if (!currentConfig.thinking_effort) currentConfig.thinking_effort = { mode: "global", global: "medium", local: {} };
+        currentConfig.thinking_effort.global = lower;
+        try {
+          fs.writeFileSync("config.json", JSON.stringify(currentConfig, null, 2), "utf-8");
+          return interaction.reply({ content: `✅ Config updated: \`thinking_effort\` (global) is now \`${lower}\`.`, flags: MessageFlags.Ephemeral });
+        } catch (err) {
+          return interaction.reply({ content: `❌ Failed to save config: ${err.message}`, flags: MessageFlags.Ephemeral });
+        }
       }
 
       const currentConfig = loadConfig();
@@ -1170,9 +1291,18 @@ client.on("interactionCreate", async (interaction) => {
           { name: "⏸️ AI Paused", value: `\`${isAIPaused ? "YES" : "NO"}\``, inline: true },
         );
 
+      // Thinking effort info
+      const te = currentConfig.thinking_effort || { mode: "global", global: "medium", local: {} };
+      const localCount = Object.keys(te.local || {}).length;
+      const teLabel = `${te.mode || "global"} • ${te.global || "medium"}${te.mode === "local" ? ` (${localCount} model overrides)` : ""}`;
+      embed.addFields({ name: "🧠 Thinking Effort", value: `\`${teLabel}\``, inline: true });
+
       const greetStatus = currentConfig.greet_new_members !== false ? "✅ ON" : "❌ OFF";
       const greetChannel = currentConfig.greet_channel_id ? ` in <#${currentConfig.greet_channel_id}>` : " (system channel)";
       embed.addFields({ name: "👋 Member Greeting", value: `${greetStatus}${greetChannel}`, inline: true });
+
+      const feedbackStatus = currentConfig.feedback_system !== false ? "✅ ON (⬆️/⬇️)" : "❌ OFF";
+      embed.addFields({ name: "📊 Feedback Rating", value: feedbackStatus, inline: true });
 
       const models = currentConfig.models || {};
       const registry = loadModelRegistry();
@@ -1719,6 +1849,103 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.reply({ content: `❌ Category \`${name}\` not found.`, flags: MessageFlags.Ephemeral });
       }
       return interaction.reply({ content: `🗑️ Deleted task category \`${res.name}\`.`, flags: MessageFlags.Ephemeral });
+    }
+  }
+
+  // ── Thinking Effort Commands ──────────────────────────────────────────────
+  if (isAdmin) {
+    if (interaction.commandName === "thinking_set") {
+      const effort = interaction.options.getString('effort').toLowerCase();
+      const modelName = interaction.options.getString('model')?.trim() || null;
+
+      if (!["low", "medium", "high"].includes(effort)) {
+        return interaction.reply({ content: '❌ Effort must be `low`, `medium`, or `high`.', flags: MessageFlags.Ephemeral });
+      }
+
+      const currentConfig = loadConfig();
+      if (!currentConfig.thinking_effort) {
+        currentConfig.thinking_effort = { mode: "global", global: "medium", local: {} };
+      }
+      if (!currentConfig.thinking_effort.local) currentConfig.thinking_effort.local = {};
+
+      if (modelName) {
+        currentConfig.thinking_effort.local[modelName] = effort;
+        fs.writeFileSync("config.json", JSON.stringify(currentConfig, null, 2), "utf-8");
+        const extraNote = currentConfig.thinking_effort.mode !== "local"
+          ? "\n💡 *Note: Bot is currently in `global` mode. Switch to `local` mode with `/thinking_mode mode: local` for per-model settings to take effect.*"
+          : "";
+        return interaction.reply({ content: `✅ Thinking effort for model \`${modelName}\` set to \`${effort}\`.${extraNote}`, flags: MessageFlags.Ephemeral });
+      } else {
+        currentConfig.thinking_effort.global = effort;
+        fs.writeFileSync("config.json", JSON.stringify(currentConfig, null, 2), "utf-8");
+        return interaction.reply({ content: `✅ Global thinking effort set to \`${effort}\`.`, flags: MessageFlags.Ephemeral });
+      }
+    }
+
+    if (interaction.commandName === "thinking_mode") {
+      const mode = interaction.options.getString('mode').toLowerCase();
+      const currentConfig = loadConfig();
+      if (!currentConfig.thinking_effort) {
+        currentConfig.thinking_effort = { mode: "global", global: "medium", local: {} };
+      }
+      currentConfig.thinking_effort.mode = mode;
+      fs.writeFileSync("config.json", JSON.stringify(currentConfig, null, 2), "utf-8");
+      const desc = mode === "global"
+        ? `All models will use the global setting (\`${currentConfig.thinking_effort.global || "medium"}\`).`
+        : `Each model will use its local setting (or fall back to \`${currentConfig.thinking_effort.global || "medium"}\`).`;
+      return interaction.reply({ content: `✅ Thinking effort mode set to \`${mode}\`.\n${desc}`, flags: MessageFlags.Ephemeral });
+    }
+
+    if (interaction.commandName === "thinking_check") {
+      const currentConfig = loadConfig();
+      const te = currentConfig.thinking_effort || { mode: "global", global: "medium", local: {} };
+      const embed = new EmbedBuilder()
+        .setColor(0x2F3136)
+        .setTitle("🧠 Thinking Effort Configuration")
+        .addFields(
+          { name: "Current Mode", value: `\`${te.mode || "global"}\``, inline: true },
+          { name: "Global Setting", value: `\`${te.global || "medium"}\``, inline: true },
+        );
+
+      const localMap = te.local || {};
+      const localEntries = Object.entries(localMap);
+      if (localEntries.length > 0) {
+        const localDisplay = localEntries.map(([m, eff]) => `• \`${m}\` → \`${eff}\``).join("\n");
+        embed.addFields({ name: "Local Model Overrides", value: localDisplay, inline: false });
+      } else {
+        embed.addFields({ name: "Local Model Overrides", value: "*(none configured)*", inline: false });
+      }
+
+      embed.setFooter({
+        text: (te.mode === "global")
+          ? "Currently active: global setting for all models"
+          : "Currently active: local overrides (unconfigured models use global)"
+      });
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    }
+
+    if (interaction.commandName === "feedback") {
+      const enabledOpt = interaction.options.getString('enabled');
+      const currentConfig = loadConfig();
+      if (enabledOpt) {
+        const isEnabled = enabledOpt === "on";
+        currentConfig.feedback_system = isEnabled;
+        fs.writeFileSync("config.json", JSON.stringify(currentConfig, null, 2), "utf-8");
+        return interaction.reply({
+          content: `✅ Feedback system has been turned **${isEnabled ? "ON" : "OFF"}**. ${isEnabled ? "The bot will react with ⬆️ and ⬇️ to rate its responses." : "Rating reactions disabled."}`,
+          flags: MessageFlags.Ephemeral
+        });
+      } else {
+        const isEnabled = currentConfig.feedback_system !== false;
+        const currentFb = getLatestFeedback(interaction.channelId);
+        const fbInfo = currentFb
+          ? `Latest response score in this channel: **${currentFb.score > 0 ? "+" + currentFb.score : currentFb.score}** (⬆️ +${currentFb.upvotes}, ⬇️ -${currentFb.downvotes})`
+          : "No feedback recorded for this channel yet.";
+        return interaction.reply({
+          content: `📊 Feedback system status: **${isEnabled ? "ON" : "OFF"}**\n${fbInfo}`,
+          flags: MessageFlags.Ephemeral
+        });
+      }
     }
   }
 
