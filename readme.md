@@ -1,17 +1,19 @@
 A random Discord bot created by a random person with the help of AIs (yeah)
+This is a personal, non-serious project, very random, so many things are not looking very good if you inspect closely; but eyy, at least it runs, in a way or another :)
 
-Join my server to chat with the bot: https://discord.gg/cqjdsNnApw
+Join [my server](https://discord.gg/cqjdsNnApw) to chat with the bot if you want to try it without inserting your API key (lol)
 
-## A multi-purpose bot
-Supports basic Discord moderation commands like: ban, kick, timeout, purge, etc...
 
-# A bot to chat Gemini with AI
+# A bot to chat with Gehihi
 
 - This bot acts very close to a real person on Discord, can talk, listen, and understand you. It can also answer your questions, and help you with your tasks.
 - It will always answer when you @mention it, or when you reply to it.
 - It will also randomly appear in text channel.
 - It can react to messages, use embed also.
 - It can join voicechats and like Live mode.
+
+## A multi-purpose bot
+Supports basic Discord moderation commands like: ban, kick, timeout, purge, etc...
 
 # Setup
 
