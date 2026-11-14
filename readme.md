@@ -2,8 +2,8 @@ A random Discord bot created by a random person with the help of AIs (yeah)
 
 Join my server to chat with the bot: https://discord.gg/cqjdsNnApw
 
-# A multi-purpose bot
-Supports Discord moderation commands like: ban, kick, timeout, purge, etc...
+## A multi-purpose bot
+Supports basic Discord moderation commands like: ban, kick, timeout, purge, etc...
 
 # A bot to chat Gemini with AI
 
@@ -45,7 +45,6 @@ npm start
 This project uses:
 
 - `discord.js-voice`: For voice connection management
-- `gemini-live-api`: For connecting to Gemini Live
 - `@google-cloud/gemini`: For the Gemini API
 - `node-opus`: For Opus encoding
 
@@ -54,3 +53,10 @@ This project uses:
 ### API Rate Limits
 Gemini Live has rate limits. If you hit them, you'll see error messages in the console. Consider:
 - Checking your quota on [Google AI Studio](https://aistudio.google.com/app/quotas)
+
+### Encounter unlisted bugs? You can do one or multiple of the following:
+- Report the issues in this repo's Issues tab
+- Fix it yourself and contribute here (if possible, appreciate it)
+- Vibe fix it :)
+- It's not a bug, IT'S A FEATURE!!
+- Just ignore it, nothing happened (yes) 
