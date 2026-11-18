@@ -294,12 +294,10 @@ export async function generateReply(channelId, userText, guildId = null, guild =
         const config = {
           systemInstruction: SYSTEM_PROMPT,
           temperature: 0.7,
-          maxOutputTokens: 1000,
           ...getThinkingConfig(model, cfg),
         };
         if (useSearch) config.tools = [{ googleSearch: {} }];
         else if (taskType === "NORMAL") {
-          config.maxOutputTokens = 600;
           config.temperature = 1.0;
         }
 
@@ -332,7 +330,6 @@ export async function generateReply(channelId, userText, guildId = null, guild =
         const fallbackConfig = {
           systemInstruction: SYSTEM_PROMPT,
           temperature: 1.0,
-          maxOutputTokens: 600,
           ...getThinkingConfig(model, cfg),
         };
         const replyText = await aiProvider.generateText(model, contents, fallbackConfig);
@@ -366,7 +363,6 @@ export async function generateReply(channelId, userText, guildId = null, guild =
           const donatedConfig = {
             systemInstruction: SYSTEM_PROMPT,
             temperature: taskType === "NORMAL" ? 1.0 : 0.7,
-            maxOutputTokens: taskType === "NORMAL" ? 600 : 1000,
             ...getThinkingConfig(model, cfg),
           };
           if (useSearch) donatedConfig.tools = [{ googleSearch: {} }];
@@ -459,7 +455,6 @@ export async function generateComparisonReply(channelId, userText, guildId = nul
       const replyText = await aiProvider.generateText(model, contents, {
         systemInstruction: SYSTEM_PROMPT,
         temperature: 0.7,
-        maxOutputTokens: 800,
       });
       const durationMs = Date.now() - start;
       logger.debug(`[Compare] ${model} responded in ${durationMs}ms`);
@@ -503,7 +498,6 @@ export async function generatePromptReply(prompt, guildId = null, guild = null) 
       const replyText = await aiProvider.generateText(model, contents, {
         systemInstruction: SYSTEM_PROMPT,
         temperature: 1.0,
-        maxOutputTokens: 400,
       });
       if (replyText) {
         logger.log(`\n[Raw AI Response]:\n${replyText}\n--------------------------`);
@@ -524,7 +518,6 @@ export async function generatePromptReply(prompt, guildId = null, guild = null) 
           const replyText = await tempProvider.generateText(model, contents, {
             systemInstruction: SYSTEM_PROMPT,
             temperature: 1.0,
-            maxOutputTokens: 400,
           });
           if (replyText) {
             logger.log(`\n[Raw AI Response]:\n${replyText}\n--------------------------`);
