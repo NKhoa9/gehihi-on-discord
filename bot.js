@@ -1090,19 +1090,19 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
   logger.log(`[Command] ${interaction.user.tag} used /${interaction.commandName}`);
 
-  if (interaction.commandName === "join") await joinAndStartLive(interaction, logger);
-  if (interaction.commandName === "leave") await leaveLive(interaction);
+  if (interaction.commandName === "join") return await joinAndStartLive(interaction, logger);
+  if (interaction.commandName === "leave") return await leaveLive(interaction);
 
   if (interaction.commandName === "clear") {
     clearHistory(interaction.channelId);
     clearFeedback(interaction.channelId);
-    await interaction.reply({ content: "🧹 Memory wiped for this channel! Fresh start.", flags: MessageFlags.Ephemeral });
+    return await interaction.reply({ content: "🧹 Memory wiped for this channel! Fresh start.", flags: MessageFlags.Ephemeral });
   }
 
   if (interaction.commandName === "ping") {
     const latency = Math.round(client.ws.ping);
     const pauseStatus = isAIPaused ? "⏸️ Paused (globally)" : "▶️ Active";
-    await interaction.reply({ content: `🏓 Pong! \`${latency}ms\` • AI Status: **${pauseStatus}**`, flags: MessageFlags.Ephemeral });
+    return await interaction.reply({ content: `🏓 Pong! \`${latency}ms\` • AI Status: **${pauseStatus}**`, flags: MessageFlags.Ephemeral });
   }
 
   if (interaction.commandName === "memories") {
@@ -1153,7 +1153,8 @@ client.on("interactionCreate", async (interaction) => {
     "model_add", "model_remove", "model_move",
     "disable_ai", "enable_ai",
     "schedule_add", "schedule_remove", "schedule_toggle", "schedule_list",
-    "series_create", "series_delete", "category_create", "category_delete"
+    "series_create", "series_delete", "category_create", "category_delete",
+    "thinking_set", "thinking_mode", "thinking_check", "feedback"
   ];
   if (adminCommands.includes(interaction.commandName)) {
     const adminEnv = process.env.ADMINS || "";
@@ -1850,10 +1851,8 @@ client.on("interactionCreate", async (interaction) => {
       }
       return interaction.reply({ content: `🗑️ Deleted task category \`${res.name}\`.`, flags: MessageFlags.Ephemeral });
     }
-  }
 
-  // ── Thinking Effort Commands ──────────────────────────────────────────────
-  if (isAdmin) {
+    // ── Thinking Effort Commands ──────────────────────────────────────────────
     if (interaction.commandName === "thinking_set") {
       const effort = interaction.options.getString('effort').toLowerCase();
       const modelName = interaction.options.getString('model')?.trim() || null;
