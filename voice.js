@@ -24,7 +24,7 @@ function loadConfig() {
   }
 }
 
-const GEMINI_LIVE_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${process.env.GEMINI_API_KEY}`;
+const GEMINI_LIVE_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${process.env.GEMINI_API_KEY}`;
 
 export const voiceSessions = new Map();
 
@@ -86,9 +86,10 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
     logger.log('WebSocket connection to Gemini Live opened.');
 
     // Send initial setup message to Gemini
+    const formattedModel = modelToUse.startsWith("models/") ? modelToUse : `models/${modelToUse}`;
     ws.send(JSON.stringify({
       setup: {
-        model: modelToUse,
+        model: formattedModel,
         generationConfig: {
           responseModalities: ["AUDIO"],
           speechConfig: {
@@ -177,8 +178,8 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
 
     voiceSessions.delete(interaction.guildId);
 
-    // If it dropped unexpectedly (e.g., Quota 1011, Bad Model 1008, Abnormal 1006)
-    if (!isIntentional && (code === 1011 || code === 1008 || code === 1006 || code === 1000)) {
+    // If it dropped unexpectedly (e.g., Quota 1011, Bad Model 1007/1008, Abnormal 1006)
+    if (!isIntentional && (code === 1011 || code === 1008 || code === 1007 || code === 1006 || code === 1000)) {
       if (modelIndex < MODELS_LIVE.length - 1) {
         joinAndStartLive(interaction, logger, modelIndex + 1, true);
       } else {
@@ -227,7 +228,7 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
 
     // Discord sends raw Opus packets, we decode them to PCM (48kHz stereo)
     const opusDecoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
-    opusDecoder.on('error', err => logger.error('Opus decoder error:', err));
+    opusDecoder.on('error', err => logger.warn('Opus decoder packet error (transient/skipped):', err.message));
 
     // Resample PCM from 48kHz stereo to 16kHz mono for Gemini
     const pcmResampler = new prism.FFmpeg({
