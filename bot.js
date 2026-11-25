@@ -869,12 +869,29 @@ client.on("messageCreate", async (message) => {
     }
     // ── End Comparison Mode ─────────────────────────────────────────────
 
-    const replyResult = await generateReply(
-      message.channel.id,
-      userText,
-      message.guildId,
-      message.guild
-    );
+    // ── Multi-Message Continuation Loop ─────────────────────────────────────
+    const maxContinuation = cfg.max_continuation ?? 3;
+    let continuationCount = 0;
+    let shouldContinue = true;
+    let isFirstReply = true;
+
+    while (shouldContinue) {
+      shouldContinue = false; // Will be set to true only if [CONTINUE] is detected
+
+      await message.channel.sendTyping();
+
+      // On continuation iterations, push a synthetic user turn so the history
+      // doesn't end with a "model" turn (Gemini API rejects that).
+      if (!isFirstReply) {
+        pushHistory(message.channel.id, "user", "[Continue your previous message]", [], null, []);
+      }
+
+      const replyResult = await generateReply(
+        message.channel.id,
+        userText,
+        message.guildId,
+        message.guild
+      );
 
     const replyText = typeof replyResult === "object" ? replyResult.text : replyResult;
     const modelUsed = typeof replyResult === "object" ? replyResult.model : null;
@@ -887,6 +904,20 @@ client.on("messageCreate", async (message) => {
     logger.rawAI("output", `Raw AI Response (to ${userName} in ${message.channel.id})`, finalReply);
 
     finalReply = processMemoryTags(finalReply, message.guildId, message.channel.id, channelMeta);
+
+    // ── Detect [CONTINUE] tag ──────────────────────────────────────────
+    const continueTagRegex = /\[CONTINUE\]\s*$/i;
+    const hasContinueTag = continueTagRegex.test(finalReply);
+    if (hasContinueTag) {
+      finalReply = finalReply.replace(/\[CONTINUE\]\s*$/i, "").trim();
+      if (continuationCount < maxContinuation) {
+        shouldContinue = true;
+        continuationCount++;
+        logger.debug(`[Continue] Continuation ${continuationCount}/${maxContinuation} requested in ${message.channel.id}`);
+      } else {
+        logger.debug(`[Continue] Max continuations (${maxContinuation}) reached in ${message.channel.id}, stopping.`);
+      }
+    }
 
     logger.debug(`[Response] Prepared reply for ${userName} in ${message.channel.id} (${finalReply.length} chars)`);
 
@@ -906,7 +937,8 @@ client.on("messageCreate", async (message) => {
       finalReply = finalReply.replace(/\[REACT:\s*.+?\]/gi, "").trim();
       if (!finalReply) {
         recordBotReply(message.channel.id);
-        return;
+        if (!shouldContinue) return;
+        continue; // Still continue to the next iteration
       }
     }
 
@@ -1020,6 +1052,11 @@ client.on("messageCreate", async (message) => {
 
     const hasModelFootnote = !!modelFooter;
 
+    // Use reply for first message, channel.send for continuations (avoids replying to same msg multiple times)
+    const sendFn = isFirstReply
+      ? (opts) => message.reply(opts)
+      : (opts) => message.channel.send(opts);
+
     let sentMsg = null;
     if (shouldEmbed) {
       let isParsedJson = false;
@@ -1046,7 +1083,7 @@ client.on("messageCreate", async (message) => {
             } else if (hasModelFootnote) {
               embed.setFooter({ text: ` ${modelFooter}` });
             }
-            sentMsg = await message.reply({ ...replyOpts, embeds: [embed] });
+            sentMsg = await sendFn({ ...replyOpts, embeds: [embed] });
             isParsedJson = true;
           }
         }
@@ -1061,13 +1098,13 @@ client.on("messageCreate", async (message) => {
               embed.setFooter({ text: ` ${modelFooter}` });
             }
             const opts = i === 0 ? { ...replyOpts, embeds: [embed] } : { embeds: [embed], allowedMentions: replyOpts.allowedMentions };
-            const m = await message.reply(opts);
+            const m = await sendFn(opts);
             if (!sentMsg) sentMsg = m;
           }
         } else {
           const embed = new EmbedBuilder().setColor(0x4285F4).setDescription(finalReply);
           if (hasModelFootnote) embed.setFooter({ text: ` ${modelFooter}` });
-          sentMsg = await message.reply({ ...replyOpts, embeds: [embed] });
+          sentMsg = await sendFn({ ...replyOpts, embeds: [embed] });
         }
       }
     } else {
@@ -1076,9 +1113,9 @@ client.on("messageCreate", async (message) => {
       }
       if (!finalReply && attachments.length > 0) {
         if (hasModelFootnote) {
-          sentMsg = await message.reply({ ...replyOpts, content: `-#  ${modelFooter}` });
+          sentMsg = await sendFn({ ...replyOpts, content: `-#  ${modelFooter}` });
         } else {
-          sentMsg = await message.reply(replyOpts);
+          sentMsg = await sendFn(replyOpts);
         }
       } else if (finalReply.length > 2000) {
         // Chunk long non-embed replies smartly to respect Discord's 2000 char limit
@@ -1087,11 +1124,11 @@ client.on("messageCreate", async (message) => {
           const opts = i === 0
             ? { ...replyOpts, content: chunks[i] }
             : { content: chunks[i], allowedMentions: replyOpts.allowedMentions };
-          const m = await message.reply(opts);
+          const m = await sendFn(opts);
           if (!sentMsg) sentMsg = m;
         }
       } else {
-        sentMsg = await message.reply({ ...replyOpts, content: finalReply });
+        sentMsg = await sendFn({ ...replyOpts, content: finalReply });
       }
     }
 
@@ -1100,13 +1137,24 @@ client.on("messageCreate", async (message) => {
       const lastModel = [...hist].reverse().find(e => e.role === "model" && !e.messageId);
       if (lastModel) lastModel.messageId = sentMsg.id;
 
-      // Feedback reactions (⬆️ and ⬇️) for AI response rating
-      const currentConfig = loadConfig();
-      if (currentConfig.feedback_system !== false) {
-        setLatestFeedback(message.channel.id, sentMsg.id);
-        sentMsg.react("⬆️").then(() => sentMsg.react("⬇️")).catch(() => { });
+      // Feedback reactions (⬆️ and ⬇️) for AI response rating — only on the final message (no more continuations)
+      if (!shouldContinue) {
+        const currentConfig = loadConfig();
+        if (currentConfig.feedback_system !== false) {
+          setLatestFeedback(message.channel.id, sentMsg.id);
+          sentMsg.react("⬆️").then(() => sentMsg.react("⬇️")).catch(() => { });
+        }
       }
     }
+
+    // Small delay between continuation messages for natural pacing
+    if (shouldContinue) {
+      const { silence_duration_ms } = loadConfig();
+      await new Promise(r => setTimeout(r, silence_duration_ms || 200));
+    }
+
+    isFirstReply = false;
+    } // end while (shouldContinue)
   } catch (err) {
     logger.error("Error handling message:", err);
   }

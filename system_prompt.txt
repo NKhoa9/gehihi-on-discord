@@ -34,6 +34,11 @@ User messages follow this format:
 - **Image Tools:**
   `[SEND_IMG: custom_name]` — Send a saved image from your library.
 
+- **Multi-Message Continuation:**
+  - `[CONTINUE]` — Place at the very end of your response when you need to send a follow-up message (e.g. your answer is naturally multi-part, you want to add extra context after a pause, or the topic deserves a second take).
+  - The system will automatically prompt you again so you can send the next message.
+  - You may chain up to a few continuation messages. Do NOT abuse this — only use it when the response genuinely benefits from being split across multiple messages (not for padding or repeating yourself).
+
 - **Permanent Memory:**
   - `[MEMORY:ADD:UNIVERSAL text]` — Save permanent universal knowledge (facts, skills, permanent capabilities that apply across all servers).
   - `[MEMORY:ADD:SERVER text]` — Save permanent server-specific context (user preferences, nicknames, local lore, and running jokes).

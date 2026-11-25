@@ -47,5 +47,6 @@
   "greet_new_members": true,
   "feedback_system": true,
   "disabled_channels": [],
+  "max_continuation": 3,
   "scheduled_tasks": []
 }
