@@ -228,7 +228,7 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
 
     // Discord sends raw Opus packets, we decode them to PCM (48kHz stereo)
     const opusDecoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
-    opusDecoder.on('error', err => logger.warn('Opus decoder packet error (transient/skipped):', err.message));
+    opusDecoder.on('error', err => logger.error('[Voice] Opus decoder error:', err));
 
     // Resample PCM from 48kHz stereo to 16kHz mono for Gemini
     const pcmResampler = new prism.FFmpeg({
