@@ -4,7 +4,7 @@ import { logger } from "../utils/logger.js";
 import { loadConfig, sleep } from "../utils/config.js";
 import { getHistory, formatReactionsString } from "../core/history.js";
 import { getSavedImagesList } from "../media/images.js";
-import { buildMemoryBlock } from "../core/memory.js";
+import { buildMemoryBlock, getTempMemory, setTempMemory, resetTempMemoryCounter } from "../core/memory.js";
 import { buildGuildEmojisBlock } from "../core/emojis.js";
 import { AIProvider, GeminiProvider, createGeminiProvider } from "./provider.js";
 import { getDonatedApiKeys } from "../core/keys.js";
@@ -168,9 +168,13 @@ User message: "${text}"`;
   return "NORMAL";
 }
 
-export async function generateReply(channelId, userText, guildId = null, guild = null) {
-  const history = getHistory(channelId);
-
+/**
+ * Converts channel history entries into Gemini `contents` turns, ensuring the conversation
+ * starts with a "user" turn so Gemini API never rejects leading "model" turns.
+ * @param {Array} history
+ * @returns {Array<{ role: string, parts: Array }>}
+ */
+function buildHistoryContents(history) {
   const contents = history.map((entry) => {
     const rxStr = formatReactionsString(entry.reactions);
     const parts = [{ text: `${entry.text}${rxStr}` }];
@@ -201,7 +205,17 @@ export async function generateReply(channelId, userText, guildId = null, guild =
     return { role: entry.role, parts };
   });
 
-  const memoryBlock = buildMemoryBlock(guildId);
+  while (contents.length > 1 && contents[0].role !== "user") {
+    contents.shift();
+  }
+  return contents;
+}
+
+export async function generateReply(channelId, userText, guildId = null, guild = null) {
+  const history = getHistory(channelId);
+  const contents = buildHistoryContents(history);
+
+  const memoryBlock = buildMemoryBlock(guildId, channelId);
   const savedImages = getSavedImagesList();
   const imagesBlock = savedImages.length > 0
     ? `\n\n--- YOUR SAVED IMAGES ---\nYou currently have these images saved in your library:\n${savedImages.map(f => `- ${f}`).join("\n")}\nYou can send them using [SEND_IMG: name].\n--- END SAVED IMAGES ---`
@@ -406,37 +420,9 @@ export async function generateComparisonReply(channelId, userText, guildId = nul
   }
 
   const history = getHistory(channelId);
-  const contents = history.map((entry) => {
-    const rxStr = formatReactionsString(entry.reactions);
-    const parts = [{ text: `${entry.text}${rxStr}` }];
+  const contents = buildHistoryContents(history);
 
-    if (entry.attachments && entry.attachments.length > 0) {
-      for (const att of entry.attachments) {
-        if (att.isUnsupported) {
-          parts.push({
-            text: `[Attached file: ${att.filename || "unknown"} (unsupported binary format, cannot be read)]`
-          });
-          continue;
-        }
-        try {
-          if (att.filepath && fs.existsSync(att.filepath)) {
-            const buffer = fs.readFileSync(att.filepath);
-            parts.push({
-              text: `[File attached: ${att.filename || path.basename(att.filepath)}]`
-            });
-            parts.push({
-              inlineData: { data: buffer.toString("base64"), mimeType: att.mimeType }
-            });
-          }
-        } catch (err) {
-          logger.warn(`Failed to read cached attachment ${att.filepath}:`, err.message);
-        }
-      }
-    }
-    return { role: entry.role, parts };
-  });
-
-  const memoryBlock = buildMemoryBlock(guildId);
+  const memoryBlock = buildMemoryBlock(guildId, channelId);
   const savedImages = getSavedImagesList();
   const imagesBlock = savedImages.length > 0
     ? `\n\n--- YOUR SAVED IMAGES ---\nYou currently have these images saved in your library:\n${savedImages.map(f => `- ${f}`).join("\n")}\nYou can send them using [SEND_IMG: name].\n--- END SAVED IMAGES ---`
@@ -477,13 +463,14 @@ export async function generateComparisonReply(channelId, userText, guildId = nul
  * @param {string} prompt - The prompt text
  * @param {string|null} guildId - Optional guild ID for memory context
  * @param {import("discord.js").Guild|null} guild - Optional Discord guild object
+ * @param {string|null} channelId - Optional channel ID for temp memory context
  * @returns {Promise<string>} The AI reply text
  */
-export async function generatePromptReply(prompt, guildId = null, guild = null) {
+export async function generatePromptReply(prompt, guildId = null, guild = null, channelId = null) {
   const cfg = loadConfig();
   const modelList = getTaskModels("NORMAL", cfg);
 
-  const memoryBlock = buildMemoryBlock(guildId);
+  const memoryBlock = buildMemoryBlock(guildId, channelId);
   const emojisBlock = guild ? buildGuildEmojisBlock(guild) : "";
   const SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + memoryBlock + emojisBlock;
 
@@ -531,4 +518,90 @@ export async function generatePromptReply(prompt, guildId = null, guild = null) 
   }
 
   return "Welcome! 👋";
+}
+
+const summarizingChannels = new Set();
+const lastTempSummaryAt = new Map();
+const TEMP_SUMMARY_COOLDOWN_MS = 45 * 1000;
+
+/**
+ * Generates or refreshes a concise, strictly factual temporary memory summary for a channel
+ * in the background. Safe to fire-and-forget; never throws.
+ *
+ * @param {string} channelId
+ * @param {string|null} guildId
+ * @param {{ channelName?: string, isPrivate?: boolean }} channelMeta
+ * @param {{ force?: boolean }} options
+ */
+export async function maybeUpdateTempMemory(channelId, guildId = null, channelMeta = {}, options = {}) {
+  if (!channelId) return;
+  const cfg = loadConfig();
+  if (cfg.temp_memory_enabled === false) return;
+  if (summarizingChannels.has(channelId)) return;
+
+  const lastRun = lastTempSummaryAt.get(channelId) || 0;
+  if (!options.force && Date.now() - lastRun < TEMP_SUMMARY_COOLDOWN_MS) return;
+
+  const history = getHistory(channelId);
+  if (!history || history.length < 2) return;
+
+  summarizingChannels.add(channelId);
+  lastTempSummaryAt.set(channelId, Date.now());
+
+  try {
+    const recentEntries = history.slice(-15);
+    const transcript = recentEntries
+      .map(e => {
+        const label = e.role === "model" ? "[Bot]" : "[Chat]";
+        const clean = (e.text || "").replace(/\s+/g, " ").trim().substring(0, 300);
+        return `${label} ${clean}`;
+      })
+      .join("\n");
+
+    const existing = getTempMemory(channelId);
+    const priorBlock = existing?.summary
+      ? `Previous temp summary:\n${existing.summary}\n\n`
+      : "";
+
+    const prompt = `Summarize the ongoing Discord conversation in #${channelMeta.channelName || channelId} into a short temporary memory to ground the AI and prevent hallucinations.
+
+${priorBlock}Recent messages:
+${transcript}
+
+Rules:
+- Output ONLY 2-4 concise bullet points or sentences (max 450 characters total).
+- Record ONLY concrete facts directly stated (active participants, current topic/task, decisions/claims made, open questions).
+- NEVER guess, extrapolate, or invent details not explicitly in the messages.
+- If the messages are just meaningless greetings/noise with no real context and there is no prior summary worth keeping, reply with exactly: NONE`;
+
+    const registry = loadModelRegistry();
+    const classifierModels = getTaskModels("CLASSIFIER", cfg, registry);
+    const fallbackModels = getTaskModels("NORMAL", cfg, registry);
+    const candidates = classifierModels.length > 0 ? classifierModels : fallbackModels.slice(0, 1);
+
+    for (const model of candidates) {
+      try {
+        const reply = await aiProvider.generateText(
+          model,
+          [{ role: "user", parts: [{ text: prompt }] }],
+          { maxOutputTokens: 220, temperature: 0.2 }
+        );
+        const trimmed = (reply || "").trim();
+        if (!trimmed) continue;
+
+        if (trimmed.toUpperCase() === "NONE") {
+          resetTempMemoryCounter(channelId);
+        } else {
+          setTempMemory(channelId, trimmed.substring(0, 500), { guildId, ...channelMeta });
+        }
+        break;
+      } catch (err) {
+        logger.debug(`[TempMemory] Auto-summary failed on ${model}:`, err.message);
+      }
+    }
+  } catch (err) {
+    logger.debug(`[TempMemory] Background summarization error for ${channelId}:`, err.message);
+  } finally {
+    summarizingChannels.delete(channelId);
+  }
 }

@@ -34,13 +34,18 @@ User messages follow this format:
 - **Image Tools:**
   `[SEND_IMG: custom_name]` — Send a saved image from your library.
 
-- **Persistent Memory:**
-  - `[MEMORY:ADD:UNIVERSAL text]` — Save universal knowledge (facts, skills, permanent capabilities that apply across all servers).
-  - `[MEMORY:ADD:SERVER text]` — Save server-specific context (user preferences, nicknames, local lore, and running jokes for better conversation flow).
-  - `[MEMORY:EDIT #id updated text]` — Update an existing memory by its ID.
-  - `[MEMORY:DELETE #id reason]` — Delete an existing memory by its ID.
-  *Proactively store facts, skills, nicknames, and context.*
-  Always save/add memories in English.
+- **Permanent Memory:**
+  - `[MEMORY:ADD:UNIVERSAL text]` — Save permanent universal knowledge (facts, skills, permanent capabilities that apply across all servers).
+  - `[MEMORY:ADD:SERVER text]` — Save permanent server-specific context (user preferences, nicknames, local lore, and running jokes).
+  - `[MEMORY:EDIT #id updated text]` — Update an existing permanent memory by its ID.
+  - `[MEMORY:DELETE #id reason]` — Delete an existing permanent memory by its ID.
+  *Proactively store long-term facts, skills, nicknames, and lore. Never store fleeting chat state as permanent memory.*
+  Always save/add permanent memories in English.
+
+- **Temporary Memory (Anti-Hallucination & Cross-Channel Context):**
+  - `[TEMP_MEMORY: short factual summary]` — Update the current channel's temporary memory with a concise, strictly factual summary of what is happening right now (active users, topic/goal, key decisions/facts stated, open questions).
+  - `[TEMP_MEMORY:CLEAR]` — Clear the current channel's temporary memory when a topic/session completely wraps up.
+  - Your prompt may show `[TEMP - THIS CHANNEL]` and `[TEMP - OTHER CHANNELS IN THIS SERVER]`. Use these to stay grounded (reduce hallucinations) and maintain awareness across channels, while never confusing which channel an event occurred in or inventing unstated details.
 
 ---
 
