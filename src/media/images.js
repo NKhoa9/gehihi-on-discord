@@ -91,8 +91,7 @@ export async function searchGoogleImage(query) {
     const data = await res.json();
     if (data.items && data.items.length > 0) return data.items[0].link;
   } catch (err) {
-    logger.error("[SearchImg] Google API failed:", err.message);
-    logger.debug("[SearchImg] Falling back to DDG after Google API failure.");
+    logger.warn(`[SearchImg] Google API failed (${err.message}); falling back to DDG.`);
     return await searchImageFallback(query);
   }
   return null;
