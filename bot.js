@@ -1356,7 +1356,7 @@ client.on("interactionCreate", async (interaction) => {
       } else if (setting === "random_appear_rate") {
         newValue = parseFloat(valueStr);
         if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid number (e.g. 0.1).", flags: MessageFlags.Ephemeral });
-      } else if (setting === "logging" || setting === "debug_logging" || setting === "show_errors_in_chat" || setting === "greet_new_members" || setting === "feedback_system" || setting === "temp_memory_enabled") {
+      } else if (setting === "logging" || setting === "greet_new_members" || setting === "feedback_system" || setting === "temp_memory_enabled") {
         const lower = valueStr.toLowerCase();
         if (lower === "true" || lower === "on" || lower === "1") newValue = true;
         else if (lower === "false" || lower === "off" || lower === "0") newValue = false;
