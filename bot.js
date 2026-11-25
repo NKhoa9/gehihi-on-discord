@@ -16,13 +16,34 @@ import {
   saveLoggingConfig
 } from "./src/utils/logger.js";
 import { loadConfig } from "./src/utils/config.js";
-import { getGuildMemories, setGuildMemories, getUniversalMemories, setUniversalMemories, processMemoryTags } from "./src/core/memory.js";
+import {
+  getGuildMemories,
+  setGuildMemories,
+  getUniversalMemories,
+  setUniversalMemories,
+  processMemoryTags,
+  getTempMemory,
+  getGuildTempMemories,
+  clearTempMemory,
+  clearGuildTempMemories,
+  clearAllTempMemories,
+  noteTempMemoryMessage
+} from "./src/core/memory.js";
 import { resolveGuildEmojis, resolveReactEmoji } from "./src/core/emojis.js";
 import { shouldRespond, recordBotReply } from "./src/core/trigger.js";
-import { pushHistory, clearHistory, updateHistoryReactions, getHistory } from "./src/core/history.js";
+import {
+  pushHistory,
+  clearHistory,
+  updateHistoryReactions,
+  getHistory,
+  ensureChannelHistoryFetched,
+  formatUserMessageText,
+  extractMessageReactions,
+  cleanMessageContent
+} from "./src/core/history.js";
 import { cacheAttachments } from "./src/media/attachments.js";
 import { getSavedImagesList, getSavedImage, downloadImageToLib, searchGoogleImage } from "./src/media/images.js";
-import { generateImage, generateVideo, generateReply, generateComparisonReply, generatePromptReply, getThinkingEffort } from "./src/ai/router.js";
+import { generateImage, generateVideo, generateReply, generateComparisonReply, generatePromptReply, getThinkingEffort, maybeUpdateTempMemory } from "./src/ai/router.js";
 import { setLatestFeedback, updateFeedbackScoreFromMessage, clearFeedback, getLatestFeedback } from "./src/core/feedback.js";
 import { addKey, removeKey, getAllKeys } from "./src/core/keys.js";
 import { isChannelDisabled, disableChannel, enableChannel, getDisabledChannels } from "./src/core/channel_control.js";
@@ -90,34 +111,38 @@ const commands = [
     .setDescription("Leave the voice channel"),
   new SlashCommandBuilder()
     .setName("clear")
-    .setDescription("Clear the bot's memory for this channel"),
+    .setDescription("Clear the bot's history and temp memory for this channel"),
   new SlashCommandBuilder()
     .setName("ping")
     .setDescription("Check if the bot is alive"),
   new SlashCommandBuilder()
     .setName("memories")
-    .setDescription("View the bot's saved memories")
+    .setDescription("View the bot's saved permanent and temporary memories")
     .addStringOption(option =>
       option.setName("scope")
-        .setDescription("Which memories to view (all, universal, server)")
+        .setDescription("Which memories to view")
         .setRequired(false)
         .addChoices(
-          { name: "all (universal + server)", value: "all" },
-          { name: "universal (facts & skills)", value: "universal" },
-          { name: "server (context & lore)", value: "server" }
+          { name: "all (permanent + temp)", value: "all" },
+          { name: "permanent (universal + server)", value: "permanent" },
+          { name: "universal (permanent facts & skills)", value: "universal" },
+          { name: "server (permanent context & lore)", value: "server" },
+          { name: "temp (current convo & cross-channel)", value: "temp" }
         )
     ),
   new SlashCommandBuilder()
     .setName("reset_memory")
-    .setDescription("[Admin] Completely erase AI memories")
+    .setDescription("[Admin] Erase AI permanent or temporary memories")
     .addStringOption(option =>
       option.setName("scope")
-        .setDescription("Which memories to erase (server, universal, all)")
+        .setDescription("Which memories to erase")
         .setRequired(false)
         .addChoices(
-          { name: "server (this server only)", value: "server" },
-          { name: "universal (global facts & skills)", value: "universal" },
-          { name: "all (both server & universal)", value: "all" }
+          { name: "server (permanent server memories)", value: "server" },
+          { name: "universal (permanent global facts & skills)", value: "universal" },
+          { name: "temp (temp memory for this channel)", value: "temp" },
+          { name: "temp_server (all temp memories in this server)", value: "temp_server" },
+          { name: "all (all permanent & temp memories)", value: "all" }
         )
     ),
   new SlashCommandBuilder()
@@ -133,6 +158,9 @@ const commands = [
         .addChoices(
           { name: 'response_mode', value: 'response_mode' },
           { name: 'max_history', value: 'max_history' },
+          { name: 'history_fetch_limit', value: 'history_fetch_limit' },
+          { name: 'temp_memory_enabled', value: 'temp_memory_enabled' },
+          { name: 'temp_memory_ttl_minutes', value: 'temp_memory_ttl_minutes' },
           { name: 'random_appear_rate', value: 'random_appear_rate' },
           { name: 'silence_duration_ms', value: 'silence_duration_ms' },
           { name: 'voice_name', value: 'voice_name' },
@@ -542,12 +570,22 @@ async function registerCommands() {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function cleanContent(message) {
-  let text = message.content;
-  text = text.replace(new RegExp(`<@!?${client.user.id}>`, "g"), "").trim();
-  // Convert Discord custom emojis <:name:id> and <a:name:id> to readable :name:
-  text = text.replace(/<a?:(\w+):\d+>/g, ':$1:');
-  return text || "hey";
+  return cleanMessageContent(message.content, client.user.id) || "hey";
 }
+
+function getChannelMeta(channel, guild) {
+  let isPrivate = false;
+  if (guild && channel?.permissionsFor && guild.roles?.everyone) {
+    isPrivate = !channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel);
+  }
+  return {
+    guildId: guild?.id || null,
+    channelName: channel?.name || "dm",
+    isPrivate,
+  };
+}
+
+const TEMP_MEMORY_SUMMARY_INTERVAL = 8;
 
 // ── Rate Limiting for /add_custom_img ───────────────────────────────────────
 const IMG_RATE_LIMIT = 3;          // max images per window
@@ -633,7 +671,7 @@ async function sendScheduledMessage(channelId, guildId, prompt) {
     }
     const channel = await client.channels.fetch(channelId);
     if (!channel || !channel.isTextBased()) return;
-    const reply = await generatePromptReply(prompt, guildId);
+    const reply = await generatePromptReply(prompt, guildId, channel.guild || null, channelId);
     if (reply && !reply.includes("[IGNORE]")) {
       const chunks = smartSplit(reply, 2000);
       for (const chunk of chunks) {
@@ -694,7 +732,7 @@ client.on("guildMemberAdd", async (member) => {
 
   try {
     const prompt = `A new member just joined the Discord server! Their name is "${member.displayName}" (username: ${member.user.username}, ID: ${member.id}). The server name is "${member.guild.name}". Write a short, warm, and fun welcome greeting for them. Keep it casual and friendly, 1-3 sentences max. Don't use any control tags.`;
-    const greeting = await generatePromptReply(prompt, member.guild.id, member.guild);
+    const greeting = await generatePromptReply(prompt, member.guild.id, member.guild, channel.id);
     if (greeting) {
       await channel.send({ content: greeting, allowedMentions: { parse: ['users'] } });
       logger.log(`[Greet] Welcomed ${member.user.username} in ${member.guild.name}`);
@@ -713,31 +751,22 @@ client.on("messageCreate", async (message) => {
     await message.guild.emojis.fetch().catch(() => { });
   }
 
+  const channelDisabled = isChannelDisabled(message.channel.id);
+  const channelMeta = getChannelMeta(message.channel, message.guild);
+
+  // Fetch prior messages in this channel before collecting new messages
+  let fetchedCount = 0;
+  if (!channelDisabled) {
+    fetchedCount = await ensureChannelHistoryFetched(message.channel, client.user.id, message.id);
+  }
+
   const userText = cleanContent(message);
   const userName = message.author.displayName || message.author.username;
-  const userId = message.author.id;
-  const timestamp = message.createdAt.toISOString();
 
-  let historyPrefix = `[${timestamp}] ${userName} (ID: ${userId})`;
-
+  let repliedMsg = null;
   if (message.reference) {
     try {
-      const repliedMsg = await message.channel.messages.fetch(message.reference.messageId);
-      const replyAuthor = repliedMsg.author.displayName || repliedMsg.author.username;
-      const replyAuthorId = repliedMsg.author.id;
-      let replyContent = (repliedMsg.content || "").substring(0, 100);
-      replyContent = replyContent.replace(/<a?:(\w+):\d+>/g, ':$1:');
-
-      let repliedRx = "";
-      if (repliedMsg.reactions?.cache?.size > 0) {
-        const rxList = [];
-        for (const [, rx] of repliedMsg.reactions.cache) {
-          const emojiStr = rx.emoji.id ? `<${rx.emoji.animated ? "a" : ""}:${rx.emoji.name}:${rx.emoji.id}>` : rx.emoji.name;
-          rxList.push(`${emojiStr} x${rx.count}`);
-        }
-        if (rxList.length > 0) repliedRx = ` [reactions: ${rxList.join(", ")}]`;
-      }
-      historyPrefix += ` [replying to ${replyAuthor} (ID: ${replyAuthorId})${repliedRx}: "${replyContent}"]`;
+      repliedMsg = await message.channel.messages.fetch(message.reference.messageId);
     } catch { }
   }
 
@@ -745,32 +774,18 @@ client.on("messageCreate", async (message) => {
     ? await cacheAttachments(message.attachments)
     : [];
 
-  // Collect existing reactions on the message (usually empty for new messages)
-  const initialReactions = [];
-  if (message.reactions?.cache?.size > 0) {
-    for (const [, rx] of message.reactions.cache) {
-      const emojiStr = rx.emoji.id ? `<${rx.emoji.animated ? "a" : ""}:${rx.emoji.name}:${rx.emoji.id}>` : rx.emoji.name;
-      initialReactions.push({ emoji: emojiStr, count: rx.count });
-    }
-  }
-  pushHistory(message.channel.id, "user", `${historyPrefix}: ${userText}`, cachedAttachments, message.id, initialReactions);
+  const initialReactions = extractMessageReactions(message);
+  const formattedUserEntry = formatUserMessageText(message, client.user.id, repliedMsg, "hey");
+  pushHistory(message.channel.id, "user", formattedUserEntry, cachedAttachments, message.id, initialReactions);
 
-  if (isAIPaused) return;
+  const msgCountSinceSummary = !channelDisabled
+    ? noteTempMemoryMessage(message.channel.id, channelMeta, 1 + fetchedCount)
+    : 0;
 
-  // Check if AI is disabled in this channel
-  if (isChannelDisabled(message.channel.id)) return;
+  if (isAIPaused || channelDisabled) return;
 
   let isMentioned = message.mentions.has(client.user);
-  let isReplyToBot = false;
-
-  if (message.reference && !isMentioned) {
-    try {
-      const repliedTo = await message.channel.messages.fetch(message.reference.messageId);
-      if (repliedTo.author.id === client.user.id) {
-        isReplyToBot = true;
-      }
-    } catch { }
-  }
+  let isReplyToBot = Boolean(repliedMsg && repliedMsg.author?.id === client.user.id);
 
   const cfg = loadConfig();
   const decision = shouldRespond({
@@ -783,6 +798,10 @@ client.on("messageCreate", async (message) => {
   });
 
   if (!decision.shouldProcess) {
+    logger.debug(`[Ignore] Trigger check not passed (${decision.reason}, mode: ${decision.mode}). userName: ${userName}`);
+    if (msgCountSinceSummary >= TEMP_MEMORY_SUMMARY_INTERVAL) {
+      void maybeUpdateTempMemory(message.channel.id, message.guildId, channelMeta);
+    }
     return;
   }
 
@@ -867,7 +886,7 @@ client.on("messageCreate", async (message) => {
     let finalReply = (replyText || "").trim();
     logger.rawAI("output", `Raw AI Response (to ${userName} in ${message.channel.id})`, finalReply);
 
-    finalReply = processMemoryTags(finalReply, message.guildId);
+    finalReply = processMemoryTags(finalReply, message.guildId, message.channel.id, channelMeta);
 
     logger.debug(`[Response] Prepared reply for ${userName} in ${message.channel.id} (${finalReply.length} chars)`);
 
@@ -988,6 +1007,11 @@ client.on("messageCreate", async (message) => {
     // Task 4: Push the PROCESSED reply to history (after all tag stripping)
     pushHistory(message.channel.id, "model", finalReply, [], null, []);
     recordBotReply(message.channel.id);
+
+    const postReplyCount = noteTempMemoryMessage(message.channel.id, channelMeta, 1);
+    if (postReplyCount >= TEMP_MEMORY_SUMMARY_INTERVAL) {
+      void maybeUpdateTempMemory(message.channel.id, message.guildId, channelMeta);
+    }
 
     const replyOpts = {
       allowedMentions: { repliedUser: false, parse: ['users', 'roles'] },
@@ -1174,33 +1198,45 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
   logger.log(`[Command] ${interaction.user.tag} used /${interaction.commandName}`);
 
-  if (interaction.commandName === "join") await joinAndStartLive(interaction, logger);
-  if (interaction.commandName === "leave") await leaveLive(interaction);
+  if (interaction.commandName === "join") return await joinAndStartLive(interaction, logger);
+  if (interaction.commandName === "leave") return await leaveLive(interaction);
 
   if (interaction.commandName === "clear") {
     clearHistory(interaction.channelId);
+    clearTempMemory(interaction.channelId);
     clearFeedback(interaction.channelId);
-    await interaction.reply({ content: "🧹 Memory wiped for this channel! Fresh start.", flags: MessageFlags.Ephemeral });
+    return await interaction.reply({ content: "🧹 Channel history & temp memory wiped! Fresh start.", flags: MessageFlags.Ephemeral });
   }
 
   if (interaction.commandName === "ping") {
     const latency = Math.round(client.ws.ping);
     const pauseStatus = isAIPaused ? "⏸️ Paused (globally)" : "▶️ Active";
-    await interaction.reply({ content: `🏓 Pong! \`${latency}ms\` • AI Status: **${pauseStatus}**`, flags: MessageFlags.Ephemeral });
+    return await interaction.reply({ content: `🏓 Pong! \`${latency}ms\` • AI Status: **${pauseStatus}**`, flags: MessageFlags.Ephemeral });
   }
 
   if (interaction.commandName === "memories") {
     const scope = interaction.options.getString("scope") || "all";
-    const universalMemories = (scope === "all" || scope === "universal") ? getUniversalMemories() : [];
-    const serverMemories = (scope === "all" || scope === "server") ? (interaction.guildId ? getGuildMemories(interaction.guildId) : []) : [];
+    const includeUniversal = scope === "all" || scope === "permanent" || scope === "universal";
+    const includeServer = scope === "all" || scope === "permanent" || scope === "server";
+    const includeTemp = scope === "all" || scope === "temp";
 
-    if (universalMemories.length === 0 && serverMemories.length === 0) {
-      const emptyMsg = scope === "universal"
-        ? "🧠 No universal memories saved yet!"
-        : scope === "server"
-          ? "🧠 No server memories saved for this server yet!"
-          : "🧠 No memories saved yet!";
-      return interaction.reply({ content: emptyMsg, flags: MessageFlags.Ephemeral });
+    const universalMemories = includeUniversal ? getUniversalMemories() : [];
+    const serverMemories = includeServer && interaction.guildId ? getGuildMemories(interaction.guildId) : [];
+    const channelTemp = includeTemp ? getTempMemory(interaction.channelId) : null;
+    const crossTemp = includeTemp && interaction.guildId ? getGuildTempMemories(interaction.guildId, interaction.channelId, false) : [];
+
+    const hasPerm = universalMemories.length > 0 || serverMemories.length > 0;
+    const hasTemp = Boolean(channelTemp) || crossTemp.length > 0;
+
+    if (!hasPerm && !hasTemp) {
+      const emptyMessages = {
+        universal: "🧠 No permanent universal memories saved yet!",
+        server: "🧠 No permanent server memories saved for this server yet!",
+        permanent: "🧠 No permanent memories saved yet!",
+        temp: "📝 No temporary conversation memory recorded right now.",
+        all: "🧠 No permanent or temporary memories saved yet!",
+      };
+      return interaction.reply({ content: emptyMessages[scope] || emptyMessages.all, flags: MessageFlags.Ephemeral });
     }
 
     const embed = new EmbedBuilder()
@@ -1210,7 +1246,7 @@ client.on("interactionCreate", async (interaction) => {
     if (universalMemories.length > 0) {
       const uLines = universalMemories.map((m, i) => `**#${i + 1}** \`[${m.id || 'N/A'}]\`: ${m.text}`).join("\n");
       embed.addFields({
-        name: `🌐 Universal Facts & Skills (${universalMemories.length})`,
+        name: `🌐 Permanent — Universal Facts & Skills (${universalMemories.length})`,
         value: uLines.length > 1024 ? uLines.substring(0, 1020) + "..." : uLines,
         inline: false
       });
@@ -1219,14 +1255,32 @@ client.on("interactionCreate", async (interaction) => {
     if (serverMemories.length > 0) {
       const sLines = serverMemories.map((m, i) => `**#${i + 1}** \`[${m.id || 'N/A'}]\`: ${m.text}`).join("\n");
       embed.addFields({
-        name: `🏰 Server Context & Lore (${serverMemories.length})`,
+        name: `🏰 Permanent — Server Context & Lore (${serverMemories.length})`,
         value: sLines.length > 1024 ? sLines.substring(0, 1020) + "..." : sLines,
         inline: false
       });
     }
 
-    const totalCount = universalMemories.length + serverMemories.length;
-    embed.setFooter({ text: `${totalCount} memory item(s) • Scope: ${scope}` });
+    if (channelTemp) {
+      embed.addFields({
+        name: `📝 Temp Memory — This Channel (#${channelTemp.channelName})`,
+        value: channelTemp.summary.length > 1024 ? channelTemp.summary.substring(0, 1020) + "..." : channelTemp.summary,
+        inline: false
+      });
+    }
+
+    if (crossTemp.length > 0) {
+      const cLines = crossTemp.map(t => `**#${t.channelName}** *(${t.ageLabel})*: ${t.summary}`).join("\n");
+      embed.addFields({
+        name: `🔀 Temp Memory — Other Channels (${crossTemp.length})`,
+        value: cLines.length > 1024 ? cLines.substring(0, 1020) + "..." : cLines,
+        inline: false
+      });
+    }
+
+    const permCount = universalMemories.length + serverMemories.length;
+    const tempCount = (channelTemp ? 1 : 0) + crossTemp.length;
+    embed.setFooter({ text: `${permCount} permanent • ${tempCount} temp channel(s) • Scope: ${scope}` });
     return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   }
 
@@ -1237,7 +1291,8 @@ client.on("interactionCreate", async (interaction) => {
     "model_add", "model_remove", "model_move",
     "disable_ai", "enable_ai",
     "schedule_add", "schedule_remove", "schedule_toggle", "schedule_list",
-    "series_create", "series_delete", "category_create", "category_delete"
+    "series_create", "series_delete", "category_create", "category_delete",
+    "thinking_set", "thinking_mode", "thinking_check", "feedback"
   ];
   if (adminCommands.includes(interaction.commandName)) {
     const adminEnv = process.env.ADMINS || "";
@@ -1250,14 +1305,27 @@ client.on("interactionCreate", async (interaction) => {
       const scope = interaction.options.getString("scope") || "server";
       if (scope === "universal") {
         setUniversalMemories([]);
-        return interaction.reply({ content: "🧠 All Universal AI memories (facts & skills) have been completely wiped by an admin." });
+        return interaction.reply({ content: "🧠 All Permanent Universal AI memories (facts & skills) have been completely wiped by an admin." });
+      } else if (scope === "temp") {
+        clearTempMemory(interaction.channelId);
+        return interaction.reply({ content: "📝 Temporary AI memory for this channel has been cleared by an admin." });
+      } else if (scope === "temp_server") {
+        if (interaction.guildId) clearGuildTempMemories(interaction.guildId);
+        else clearTempMemory(interaction.channelId);
+        return interaction.reply({ content: "📝 All Temporary AI memories for this server have been cleared by an admin." });
       } else if (scope === "all") {
-        if (interaction.guildId) setGuildMemories(interaction.guildId, []);
+        if (interaction.guildId) {
+          setGuildMemories(interaction.guildId, []);
+          clearGuildTempMemories(interaction.guildId);
+        } else {
+          clearTempMemory(interaction.channelId);
+        }
         setUniversalMemories([]);
-        return interaction.reply({ content: "🧠 All Server and Universal AI memories have been completely wiped by an admin." });
+        clearAllTempMemories();
+        return interaction.reply({ content: "🧠 All Permanent (Server & Universal) and Temporary AI memories have been completely wiped by an admin." });
       } else {
         if (interaction.guildId) setGuildMemories(interaction.guildId, []);
-        return interaction.reply({ content: "🧠 All AI memories for this server have been completely wiped by an admin." });
+        return interaction.reply({ content: "🧠 All Permanent Server AI memories for this server have been completely wiped by an admin." });
       }
     }
 
@@ -1270,9 +1338,15 @@ client.on("interactionCreate", async (interaction) => {
       const setting = interaction.options.getString('setting');
       const valueStr = interaction.options.getString('value');
       let newValue = valueStr;
-      if (setting === "max_history" || setting === "silence_duration_ms") {
+      if (setting === "max_history" || setting === "silence_duration_ms" || setting === "history_fetch_limit" || setting === "temp_memory_ttl_minutes") {
         newValue = parseInt(valueStr, 10);
         if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid integer.", flags: MessageFlags.Ephemeral });
+        if (setting === "history_fetch_limit" && (newValue < 0 || newValue > 100)) {
+          return interaction.reply({ content: "❌ `history_fetch_limit` must be between `0` and `100`.", flags: MessageFlags.Ephemeral });
+        }
+        if (setting === "temp_memory_ttl_minutes" && newValue < 1) {
+          return interaction.reply({ content: "❌ `temp_memory_ttl_minutes` must be at least `1`.", flags: MessageFlags.Ephemeral });
+        }
       } else if (setting === "response_mode") {
         const lower = valueStr.toLowerCase();
         if (lower !== "smart" && lower !== "random") {
@@ -1282,7 +1356,7 @@ client.on("interactionCreate", async (interaction) => {
       } else if (setting === "random_appear_rate") {
         newValue = parseFloat(valueStr);
         if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid number (e.g. 0.1).", flags: MessageFlags.Ephemeral });
-      } else if (setting === "logging" || setting === "show_errors_in_chat" || setting === "greet_new_members" || setting === "feedback_system") {
+      } else if (setting === "logging" || setting === "debug_logging" || setting === "show_errors_in_chat" || setting === "greet_new_members" || setting === "feedback_system" || setting === "temp_memory_enabled") {
         const lower = valueStr.toLowerCase();
         if (lower === "true" || lower === "on" || lower === "1") newValue = true;
         else if (lower === "false" || lower === "off" || lower === "0") newValue = false;
@@ -1370,6 +1444,8 @@ client.on("interactionCreate", async (interaction) => {
           { name: "📋 Log Details", value: `\`${activeLevels} • ${activeCats}/${LOG_CATEGORIES.length} cats\` (/log_config)`, inline: true },
           { name: "⚠️ Chat Errors", value: `\`${currentConfig.show_errors_in_chat ? "SHOW" : "HIDE"}\``, inline: true },
           { name: "📜 Max History", value: `\`${currentConfig.max_history ?? "N/A"}\``, inline: true },
+          { name: "📥 History Fetch", value: `\`${currentConfig.history_fetch_limit ?? 20}\``, inline: true },
+          { name: "📝 Temp Memory", value: `\`${currentConfig.temp_memory_enabled !== false ? `ON (${currentConfig.temp_memory_ttl_minutes ?? 240}m)` : "OFF"}\``, inline: true },
           { name: "🎯 Trigger Mode", value: `\`${currentConfig.response_mode || "smart"}\``, inline: true },
           { name: "🎲 Random Rate", value: `\`${currentConfig.random_appear_rate ?? "N/A"}\``, inline: true },
           { name: "🔇 Silence MS", value: `\`${currentConfig.silence_duration_ms ?? "N/A"}\``, inline: true },
@@ -2094,10 +2170,8 @@ client.on("interactionCreate", async (interaction) => {
       }
       return interaction.reply({ content: `🗑️ Deleted task category \`${res.name}\`.`, flags: MessageFlags.Ephemeral });
     }
-  }
 
-  // ── Thinking Effort Commands ──────────────────────────────────────────────
-  if (isAdmin) {
+    // ── Thinking Effort Commands ──────────────────────────────────────────────
     if (interaction.commandName === "thinking_set") {
       const effort = interaction.options.getString('effort').toLowerCase();
       const modelName = interaction.options.getString('model')?.trim() || null;
