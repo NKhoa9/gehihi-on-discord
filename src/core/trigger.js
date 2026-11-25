@@ -37,12 +37,14 @@ export function shouldRespond({ message, client, cfg, userText, isMentioned, isR
 
   const mode = (cfg.response_mode || "smart").toLowerCase();
 
+  const sender = message.author?.displayName || message.author?.username || "Unknown";
+
   // 2. Legacy Random Mode
   if (mode === "random") {
     const rate = typeof cfg.random_appear_rate === "number" ? cfg.random_appear_rate : 0.05;
     const dice = Math.random();
     const pass = dice < rate;
-    logger.debug(`[Trigger:random] rate: ${rate}, dice: ${dice.toFixed(3)}, pass: ${pass}`);
+    logger.debug(`[Trigger:random] user: ${sender}, rate: ${rate}, dice: ${dice.toFixed(3)}, pass: ${pass}`);
     return {
       shouldProcess: pass,
       mode: "random",
@@ -58,7 +60,7 @@ export function shouldRespond({ message, client, cfg, userText, isMentioned, isR
   // Check hard suppressions:
   // - Bot commands (e.g. !play, /help, ?info, $balance, -skip)
   if (/^[!./?$~#;,%^-][a-zA-Z0-9_]+/i.test(trimmed)) {
-    logger.debug(`[SmartTrigger] Ignored: looks like a bot command prefix "${trimmed.substring(0, 10)}"`);
+    logger.debug(`[SmartTrigger] Ignored (${sender}): looks like a bot command prefix "${trimmed.substring(0, 10)}"`);
     return { shouldProcess: false, mode: "smart", reason: "suppressed_command" };
   }
 
@@ -71,13 +73,13 @@ export function shouldRespond({ message, client, cfg, userText, isMentioned, isR
   const mentionsBotName = botKeywords.some(kw => lower.includes(kw));
 
   if (trimmed.length <= 2 && !mentionsBotName) {
-    logger.debug(`[SmartTrigger] Ignored: message too short (${trimmed.length} chars)`);
+    logger.debug(`[SmartTrigger] Ignored (${sender}): message too short (${trimmed.length} chars)`);
     return { shouldProcess: false, mode: "smart", reason: "suppressed_short_text" };
   }
 
   // - URL only message
   if (/^https?:\/\/\S+$/i.test(trimmed)) {
-    logger.debug("[SmartTrigger] Ignored: pure URL");
+    logger.debug(`[SmartTrigger] Ignored (${sender}): pure URL`);
     return { shouldProcess: false, mode: "smart", reason: "suppressed_url_only" };
   }
 
@@ -125,7 +127,7 @@ export function shouldRespond({ message, client, cfg, userText, isMentioned, isR
   const dice = Math.random();
   const pass = dice < finalProb;
 
-  logger.debug(`[SmartTrigger] finalProb: ${finalProb.toFixed(3)}, dice: ${dice.toFixed(3)}, pass: ${pass} | Factors: [${factors.join(", ")}]`);
+  logger.debug(`[SmartTrigger] user: ${sender}, finalProb: ${finalProb.toFixed(3)}, dice: ${dice.toFixed(3)}, pass: ${pass} | Factors: [${factors.join(", ")}]`);
 
   return {
     shouldProcess: pass,

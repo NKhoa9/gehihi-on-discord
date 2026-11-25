@@ -1,6 +1,5 @@
 {
   "logging": true,
-  "debug_logging": true,
   "show_errors_in_chat": false,
   "max_history": 30,
   "response_mode": "smart",

@@ -5,7 +5,16 @@ import path from "path";
 import { joinAndStartLive, leaveLive } from "./voice.js";
 
 // -- New Modular Imports --
-import { logger } from "./src/utils/logger.js";
+import {
+  logger,
+  LOG_CATEGORIES,
+  LOG_PRESETS,
+  DEFAULT_LOGGING_CONFIG,
+  isLoggingMasterEnabled,
+  setLoggingMasterEnabled,
+  loadLoggingConfig,
+  saveLoggingConfig
+} from "./src/utils/logger.js";
 import { loadConfig } from "./src/utils/config.js";
 import { getGuildMemories, setGuildMemories, getUniversalMemories, setUniversalMemories, processMemoryTags } from "./src/core/memory.js";
 import { resolveGuildEmojis, resolveReactEmoji } from "./src/core/emojis.js";
@@ -129,7 +138,6 @@ const commands = [
           { name: 'voice_name', value: 'voice_name' },
           { name: 'model_mode', value: 'model_mode' },
           { name: 'logging', value: 'logging' },
-          { name: 'debug_logging', value: 'debug_logging' },
           { name: 'show_errors_in_chat', value: 'show_errors_in_chat' },
           { name: 'greet_new_members', value: 'greet_new_members' },
           { name: 'greet_channel_id', value: 'greet_channel_id' },
@@ -187,7 +195,85 @@ const commands = [
   new SlashCommandBuilder()
     .setName("logs")
     .setDescription("[Admin] Fetch the latest bot log entries")
-    .addIntegerOption(option => option.setName('lines').setDescription('Number of lines to fetch (default 50, max 200)').setRequired(false).setMinValue(1).setMaxValue(200)),
+    .addIntegerOption(option => option.setName('lines').setDescription('Number of lines to fetch (default 50, max 200)').setRequired(false).setMinValue(1).setMaxValue(200))
+    .addStringOption(option =>
+      option.setName('level')
+        .setDescription('Filter by log level (optional)')
+        .setRequired(false)
+        .addChoices(
+          { name: 'debug', value: 'DEBUG' },
+          { name: 'info', value: 'INFO' },
+          { name: 'warn', value: 'WARN' },
+          { name: 'error', value: 'ERROR' }
+        ))
+    .addStringOption(option =>
+      option.setName('category')
+        .setDescription('Filter by log category (optional)')
+        .setRequired(false)
+        .addChoices(...LOG_CATEGORIES.map(c => ({ name: c, value: c }))))
+    .addStringOption(option => option.setName('search').setDescription('Filter lines containing text (optional)').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName("log_config")
+    .setDescription("[Admin] Manage logging levels, categories, destinations, and presets (logging.json)")
+    .addSubcommand(sub =>
+      sub.setName("view")
+        .setDescription("View current logging configuration"))
+    .addSubcommand(sub =>
+      sub.setName("master")
+        .setDescription("Toggle master logging on/off in config.json")
+        .addBooleanOption(o => o.setName("enabled").setDescription("Turn logging on or off").setRequired(true)))
+    .addSubcommand(sub =>
+      sub.setName("level")
+        .setDescription("Enable or disable a log level in logging.json")
+        .addStringOption(o =>
+          o.setName("name")
+            .setDescription("Log level")
+            .setRequired(true)
+            .addChoices(
+              { name: "debug", value: "debug" },
+              { name: "info", value: "info" },
+              { name: "warn", value: "warn" },
+              { name: "error", value: "error" }
+            ))
+        .addBooleanOption(o => o.setName("enabled").setDescription("Enable or disable this level").setRequired(true)))
+    .addSubcommand(sub =>
+      sub.setName("category")
+        .setDescription("Enable or disable a log category (or all) in logging.json")
+        .addStringOption(o =>
+          o.setName("name")
+            .setDescription("Log category")
+            .setRequired(true)
+            .addChoices(
+              { name: "all (every category)", value: "all" },
+              ...LOG_CATEGORIES.map(c => ({ name: c, value: c }))
+            ))
+        .addBooleanOption(o => o.setName("enabled").setDescription("Enable or disable this category").setRequired(true)))
+    .addSubcommand(sub =>
+      sub.setName("options")
+        .setDescription("Update console/file destinations, rotation size, or raw AI truncation")
+        .addBooleanOption(o => o.setName("console").setDescription("Log to console"))
+        .addBooleanOption(o => o.setName("file").setDescription("Log to file"))
+        .addIntegerOption(o => o.setName("max_file_size_mb").setDescription("Max log file size in MB before rotation (0 = unlimited)").setMinValue(0).setMaxValue(500))
+        .addIntegerOption(o => o.setName("raw_max_chars").setDescription("Max chars for raw AI logs (0 = unlimited)").setMinValue(0).setMaxValue(20000)))
+    .addSubcommand(sub =>
+      sub.setName("preset")
+        .setDescription("Apply a quick logging preset")
+        .addStringOption(o =>
+          o.setName("mode")
+            .setDescription("Preset mode")
+            .setRequired(true)
+            .addChoices(
+              { name: "silent (disable all logging)", value: "silent" },
+              { name: "minimal (warn & error only)", value: "minimal" },
+              { name: "balanced (no debug or bulky raw AI dumps)", value: "balanced" },
+              { name: "verbose (everything enabled)", value: "verbose" }
+            )))
+    .addSubcommand(sub =>
+      sub.setName("reset")
+        .setDescription("Reset logging.json to defaults and enable logging"))
+    .addSubcommand(sub =>
+      sub.setName("clear_file")
+        .setDescription("Clear the active log file")),
   new SlashCommandBuilder()
     .setName("compare")
     .setDescription("[Admin] Toggle model comparison mode on/off"),
@@ -561,8 +647,7 @@ async function sendScheduledMessage(channelId, guildId, prompt) {
 }
 
 client.once("ready", async () => {
-  logger.log(`🤖 Logged in as ${client.user.tag}`);
-  logger.log(`📡 Connected to ${client.guilds.cache.size} server(s)`);
+  logger.log(`[Startup] 🤖 Logged in as ${client.user.tag} across ${client.guilds.cache.size} server(s)`);
   client.user.setActivity("Brainrot AI slop ✨", { type: ActivityType.Playing });
   await registerCommands();
 
@@ -698,7 +783,6 @@ client.on("messageCreate", async (message) => {
   });
 
   if (!decision.shouldProcess) {
-    logger.debug(`[Ignore] Trigger check not passed (${decision.reason}, mode: ${decision.mode}). userName: ${userName}`);
     return;
   }
 
@@ -781,11 +865,11 @@ client.on("messageCreate", async (message) => {
       : null;
 
     let finalReply = (replyText || "").trim();
-    logger.log(`\n[Raw AI Response]:\n${finalReply}\n--------------------------`);
+    logger.rawAI("output", `Raw AI Response (to ${userName} in ${message.channel.id})`, finalReply);
 
     finalReply = processMemoryTags(finalReply, message.guildId);
 
-    logger.log(`[Response] to ${userName} in ${message.channel.id}: ${finalReply}`);
+    logger.debug(`[Response] Prepared reply for ${userName} in ${message.channel.id} (${finalReply.length} chars)`);
 
     if (finalReply.includes("[IGNORE]")) return;
 
@@ -1147,7 +1231,7 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   const adminCommands = [
-    "reset_memory", "pause_ai", "config", "config_check", "add_image", "logs",
+    "reset_memory", "pause_ai", "config", "config_check", "add_image", "logs", "log_config",
     "compare", "compare_add", "compare_remove", "compare_models", "set_models",
     "series_add", "series_remove", "series_move", "series_list",
     "model_add", "model_remove", "model_move",
@@ -1198,7 +1282,7 @@ client.on("interactionCreate", async (interaction) => {
       } else if (setting === "random_appear_rate") {
         newValue = parseFloat(valueStr);
         if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid number (e.g. 0.1).", flags: MessageFlags.Ephemeral });
-      } else if (setting === "logging" || setting === "debug_logging" || setting === "show_errors_in_chat" || setting === "greet_new_members" || setting === "feedback_system") {
+      } else if (setting === "logging" || setting === "show_errors_in_chat" || setting === "greet_new_members" || setting === "feedback_system") {
         const lower = valueStr.toLowerCase();
         if (lower === "true" || lower === "on" || lower === "1") newValue = true;
         else if (lower === "false" || lower === "off" || lower === "0") newValue = false;
@@ -1275,12 +1359,15 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.commandName === "config_check") {
       const currentConfig = loadConfig();
+      const logCfg = loadLoggingConfig();
+      const activeLevels = Object.entries(logCfg.levels).filter(([, v]) => v).map(([k]) => k[0].toUpperCase()).join("/") || "none";
+      const activeCats = Object.values(logCfg.categories).filter(Boolean).length;
       const embed = new EmbedBuilder()
         .setColor(0x2F3136)
         .setTitle("⚙️ Current Bot Configuration")
         .addFields(
           { name: "📝 Logging", value: `\`${currentConfig.logging !== false ? "ON" : "OFF"}\``, inline: true },
-          { name: "🐛 Debug Logs", value: `\`${currentConfig.debug_logging ? "ON" : "OFF"}\``, inline: true },
+          { name: "📋 Log Details", value: `\`${activeLevels} • ${activeCats}/${LOG_CATEGORIES.length} cats\` (/log_config)`, inline: true },
           { name: "⚠️ Chat Errors", value: `\`${currentConfig.show_errors_in_chat ? "SHOW" : "HIDE"}\``, inline: true },
           { name: "📜 Max History", value: `\`${currentConfig.max_history ?? "N/A"}\``, inline: true },
           { name: "🎯 Trigger Mode", value: `\`${currentConfig.response_mode || "smart"}\``, inline: true },
@@ -1390,25 +1477,182 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.commandName === "logs") {
       const lineCount = interaction.options.getInteger('lines') || 50;
+      const levelFilter = interaction.options.getString('level');
+      const categoryFilter = interaction.options.getString('category');
+      const searchFilter = interaction.options.getString('search');
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
-        const logContent = fs.readFileSync("bot.log", "utf-8");
-        const allLines = logContent.split("\n");
-        const tail = allLines.slice(-lineCount).join("\n");
+        const logCfg = loadLoggingConfig();
+        if (!fs.existsSync(logCfg.log_file)) {
+          return interaction.editReply({ content: `📋 Log file \`${logCfg.log_file}\` does not exist yet.` });
+        }
+        const logContent = fs.readFileSync(logCfg.log_file, "utf-8");
+        let lines = logContent.split("\n").filter(Boolean);
+        const totalLines = lines.length;
+
+        if (levelFilter) {
+          lines = lines.filter(l => l.includes(`[${levelFilter}]`));
+        }
+        if (categoryFilter) {
+          lines = lines.filter(l => l.includes(`[${categoryFilter}]`));
+        }
+        if (searchFilter) {
+          const needle = searchFilter.toLowerCase();
+          lines = lines.filter(l => l.toLowerCase().includes(needle));
+        }
+
+        if (lines.length === 0) {
+          return interaction.editReply({ content: "📋 No matching log entries found." });
+        }
+
+        const tail = lines.slice(-lineCount).join("\n");
+        const filterParts = [
+          levelFilter ? `level=${levelFilter}` : null,
+          categoryFilter ? `cat=${categoryFilter}` : null,
+          searchFilter ? `search="${searchFilter}"` : null,
+        ].filter(Boolean);
+        const filterLabel = filterParts.length > 0 ? ` (${filterParts.join(", ")})` : "";
+
         if (tail.length <= 4000) {
           const embed = new EmbedBuilder()
             .setColor(0x2F3136)
-            .setTitle(`📋 Last ${lineCount} log lines`)
+            .setTitle(`📋 Last ${Math.min(lineCount, lines.length)} log lines${filterLabel}`)
             .setDescription(`\`\`\`\n${tail}\n\`\`\``)
-            .setFooter({ text: `Total log lines: ${allLines.length}` });
+            .setFooter({ text: `Matched ${lines.length} / ${totalLines} lines • File: ${logCfg.log_file}` });
           return interaction.editReply({ embeds: [embed] });
         } else {
           const buf = Buffer.from(tail, "utf-8");
           const attachment = new AttachmentBuilder(buf, { name: "bot_log_tail.txt" });
-          return interaction.editReply({ content: `📋 Last ${lineCount} log lines (too long for embed, sent as file):`, files: [attachment] });
+          return interaction.editReply({ content: `📋 Last ${Math.min(lineCount, lines.length)} log lines${filterLabel} (sent as file):`, files: [attachment] });
         }
       } catch (err) {
         return interaction.editReply({ content: `❌ Failed to read log file: ${err.message}` });
+      }
+    }
+
+    if (interaction.commandName === "log_config") {
+      const sub = interaction.options.getSubcommand();
+
+      if (sub === "view") {
+        const master = isLoggingMasterEnabled();
+        const cfg = loadLoggingConfig();
+        const levelLines = Object.entries(cfg.levels)
+          .map(([k, v]) => `${v ? "✅" : "❌"} \`${k}\``)
+          .join("  •  ");
+        const catLines = Object.entries(cfg.categories)
+          .map(([k, v]) => `${v ? "✅" : "❌"} \`${k}\``)
+          .join("\n");
+
+        const embed = new EmbedBuilder()
+          .setColor(master ? 0x57F287 : 0xED4245)
+          .setTitle("🪵 Logging Configuration")
+          .addFields(
+            { name: "🔌 Master Switch (config.json)", value: master ? "✅ **ENABLED**" : "❌ **DISABLED**", inline: true },
+            { name: "📤 Outputs (logging.json)", value: `Console: ${cfg.console ? "✅" : "❌"} • File: ${cfg.file ? "✅" : "❌"} (\`${cfg.log_file}\`)`, inline: true },
+            { name: "📏 Limits", value: `Max file: \`${cfg.max_file_size_mb} MB\` • Raw AI cap: \`${cfg.raw_max_chars || "unlimited"}\``, inline: false },
+            { name: "📊 Levels", value: levelLines, inline: false },
+            { name: "🗂️ Categories", value: catLines, inline: false },
+          )
+          .setFooter({ text: "Use /log_config level, category, options, preset, or master to customize" });
+
+        return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+      }
+
+      if (sub === "master") {
+        const enabled = interaction.options.getBoolean("enabled");
+        setLoggingMasterEnabled(enabled);
+        return interaction.reply({
+          content: `${enabled ? "✅" : "⏸️"} Master \`logging\` in \`config.json\` is now **${enabled ? "ON" : "OFF"}**.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      if (sub === "level") {
+        const name = interaction.options.getString("name");
+        const enabled = interaction.options.getBoolean("enabled");
+        const cfg = loadLoggingConfig();
+        cfg.levels[name] = enabled;
+        saveLoggingConfig(cfg);
+        return interaction.reply({
+          content: `${enabled ? "✅" : "❌"} Log level \`${name}\` is now **${enabled ? "ENABLED" : "DISABLED"}** in \`logging.json\`.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      if (sub === "category") {
+        const name = interaction.options.getString("name");
+        const enabled = interaction.options.getBoolean("enabled");
+        const cfg = loadLoggingConfig();
+        if (name === "all") {
+          for (const cat of LOG_CATEGORIES) cfg.categories[cat] = enabled;
+        } else {
+          cfg.categories[name] = enabled;
+        }
+        saveLoggingConfig(cfg);
+        return interaction.reply({
+          content: `${enabled ? "✅" : "❌"} Log categor${name === "all" ? "ies (all)" : `y \`${name}\``} **${enabled ? "ENABLED" : "DISABLED"}** in \`logging.json\`.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      if (sub === "options") {
+        const cfg = loadLoggingConfig();
+        const consoleOpt = interaction.options.getBoolean("console");
+        const fileOpt = interaction.options.getBoolean("file");
+        const maxSizeOpt = interaction.options.getInteger("max_file_size_mb");
+        const rawCapOpt = interaction.options.getInteger("raw_max_chars");
+
+        if (consoleOpt === null && fileOpt === null && maxSizeOpt === null && rawCapOpt === null) {
+          return interaction.reply({ content: "⚠️ Provide at least one option to update.", flags: MessageFlags.Ephemeral });
+        }
+
+        if (consoleOpt !== null) cfg.console = consoleOpt;
+        if (fileOpt !== null) cfg.file = fileOpt;
+        if (maxSizeOpt !== null) cfg.max_file_size_mb = maxSizeOpt;
+        if (rawCapOpt !== null) cfg.raw_max_chars = rawCapOpt;
+
+        const saved = saveLoggingConfig(cfg);
+        return interaction.reply({
+          content: `✅ Updated \`logging.json\`: Console \`${saved.console}\` • File \`${saved.file}\` • Max Size \`${saved.max_file_size_mb}MB\` • Raw Cap \`${saved.raw_max_chars || "unlimited"}\`.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      if (sub === "preset") {
+        const mode = interaction.options.getString("mode");
+        const preset = LOG_PRESETS[mode];
+        if (!preset) {
+          return interaction.reply({ content: "❌ Unknown preset.", flags: MessageFlags.Ephemeral });
+        }
+        setLoggingMasterEnabled(preset.master);
+        if (preset.levels || preset.categories) {
+          const cfg = loadLoggingConfig();
+          if (preset.levels) cfg.levels = { ...cfg.levels, ...preset.levels };
+          if (preset.categories) cfg.categories = { ...cfg.categories, ...preset.categories };
+          saveLoggingConfig(cfg);
+        }
+        return interaction.reply({
+          content: `✅ Applied logging preset **\`${mode}\`**: ${preset.description}`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      if (sub === "reset") {
+        setLoggingMasterEnabled(true);
+        saveLoggingConfig(DEFAULT_LOGGING_CONFIG);
+        return interaction.reply({
+          content: "🔄 Reset `logging.json` to defaults and enabled master `logging` in `config.json`.",
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      if (sub === "clear_file") {
+        try {
+          const file = logger.clearLogFile();
+          return interaction.reply({ content: `🧹 Cleared log file \`${file}\`.`, flags: MessageFlags.Ephemeral });
+        } catch (err) {
+          return interaction.reply({ content: `❌ Failed to clear log file: ${err.message}`, flags: MessageFlags.Ephemeral });
+        }
       }
     }
 

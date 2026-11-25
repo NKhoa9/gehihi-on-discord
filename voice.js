@@ -43,7 +43,7 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
   }
 
   if (modelIndex >= MODELS_LIVE.length) {
-    logger.log('All Live models exhausted.');
+    logger.log('[Voice] All Live models exhausted.');
     if (interaction.channel) {
       interaction.channel.send('⚠️ All voice models are currently out of quota! 🤦‍♂️');
     }
@@ -83,7 +83,7 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
   let currentAudioStream = null;
 
   ws.on('open', () => {
-    logger.log('WebSocket connection to Gemini Live opened.');
+    logger.log('[Voice] WebSocket connection to Gemini Live opened.');
 
     // Send initial setup message to Gemini
     ws.send(JSON.stringify({
@@ -108,7 +108,7 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
       const msg = JSON.parse(data.toString());
 
       if (msg.error) {
-        logger.error('Gemini Live API Server Error:', msg.error);
+        logger.error('[Voice] Gemini Live API Server Error:', msg.error);
       }
 
       if (msg.serverContent && msg.serverContent.modelTurn) {
@@ -118,7 +118,7 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
             if (!currentAudioStream) {
               currentAudioStream = new PassThrough();
 
-              currentAudioStream.on('error', err => logger.error('currentAudioStream error:', err));
+              currentAudioStream.on('error', err => logger.error('[Voice] currentAudioStream error:', err));
 
               const resampler = new prism.FFmpeg({
                 args: [
@@ -132,7 +132,7 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
                 ],
                 command: ffmpegStatic
               });
-              resampler.on('error', err => logger.error('Gemini PCM resampler error:', err));
+              resampler.on('error', err => logger.error('[Voice] Gemini PCM resampler error:', err));
 
               currentAudioStream.pipe(resampler);
 
@@ -155,12 +155,12 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
         }
       }
     } catch (e) {
-      logger.error('Error parsing WebSocket message:', e);
+      logger.error('[Voice] Error parsing WebSocket message:', e);
     }
   });
 
   ws.on('close', (code, reason) => {
-    logger.log(`Gemini Live WebSocket closed. Code: ${code}, Reason: ${reason}`);
+    logger.log(`[Voice] Gemini Live WebSocket closed. Code: ${code}, Reason: ${reason}`);
 
     // Read the flag from the WebSocket itself — this survives even if /leave
     // already deleted the session from the map.
@@ -188,7 +188,7 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
   });
 
   ws.on('error', (err) => {
-    logger.error('Gemini Live WebSocket error:', err);
+    logger.error('[Voice] Gemini Live WebSocket error:', err);
   });
 
   // Listen to the user speaking
@@ -227,7 +227,7 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
 
     // Discord sends raw Opus packets, we decode them to PCM (48kHz stereo)
     const opusDecoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
-    opusDecoder.on('error', err => logger.error('Opus decoder error:', err));
+    opusDecoder.on('error', err => logger.error('[Voice] Opus decoder error:', err));
 
     // Resample PCM from 48kHz stereo to 16kHz mono for Gemini
     const pcmResampler = new prism.FFmpeg({
@@ -242,9 +242,9 @@ export async function joinAndStartLive(interaction, logger, modelIndex = 0, isRe
       ],
       command: ffmpegStatic
     });
-    pcmResampler.on('error', err => logger.error('Discord PCM resampler error:', err));
+    pcmResampler.on('error', err => logger.error('[Voice] Discord PCM resampler error:', err));
 
-    audioStream.on('error', err => logger.error('Audio stream error:', err));
+    audioStream.on('error', err => logger.error('[Voice] Audio stream error:', err));
 
     // Destroy the pipelines AND remove the lock when silence hits
     audioStream.on('end', () => {
