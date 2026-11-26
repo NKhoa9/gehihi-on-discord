@@ -10,6 +10,8 @@
   "silence_duration_ms": 200,
   "voice_name": "Aoede",
   "model_mode": "flash-lite",
+  "thinking_window": true,
+  "show_thinking": "off",
   "thinking_effort": {
     "mode": "global",
     "global": "medium",
