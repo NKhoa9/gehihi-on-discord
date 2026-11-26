@@ -1436,36 +1436,33 @@ client.on("interactionCreate", async (interaction) => {
       const logCfg = loadLoggingConfig();
       const activeLevels = Object.entries(logCfg.levels).filter(([, v]) => v).map(([k]) => k[0].toUpperCase()).join("/") || "none";
       const activeCats = Object.values(logCfg.categories).filter(Boolean).length;
-      const embed = new EmbedBuilder()
-        .setColor(0x2F3136)
-        .setTitle("⚙️ Current Bot Configuration")
-        .addFields(
-          { name: "📝 Logging", value: `\`${currentConfig.logging !== false ? "ON" : "OFF"}\``, inline: true },
-          { name: "📋 Log Details", value: `\`${activeLevels} • ${activeCats}/${LOG_CATEGORIES.length} cats\` (/log_config)`, inline: true },
-          { name: "⚠️ Chat Errors", value: `\`${currentConfig.show_errors_in_chat ? "SHOW" : "HIDE"}\``, inline: true },
-          { name: "📜 Max History", value: `\`${currentConfig.max_history ?? "N/A"}\``, inline: true },
-          { name: "📥 History Fetch", value: `\`${currentConfig.history_fetch_limit ?? 20}\``, inline: true },
-          { name: "📝 Temp Memory", value: `\`${currentConfig.temp_memory_enabled !== false ? `ON (${currentConfig.temp_memory_ttl_minutes ?? 240}m)` : "OFF"}\``, inline: true },
-          { name: "🎯 Trigger Mode", value: `\`${currentConfig.response_mode || "smart"}\``, inline: true },
-          { name: "🎲 Random Rate", value: `\`${currentConfig.random_appear_rate ?? "N/A"}\``, inline: true },
-          { name: "🔇 Silence MS", value: `\`${currentConfig.silence_duration_ms ?? "N/A"}\``, inline: true },
-          { name: "🎙️ Voice Name", value: `\`${currentConfig.voice_name ?? "N/A"}\``, inline: true },
-          { name: "⚡ Model Mode", value: `\`${currentConfig.model_mode || "flash-lite"}\``, inline: true },
-          { name: "⏸️ AI Paused", value: `\`${isAIPaused ? "YES" : "NO"}\``, inline: true },
-        );
+      const fields = [
+        { name: "📝 Logging", value: `\`${currentConfig.logging !== false ? "ON" : "OFF"}\``, inline: true },
+        { name: "📋 Log Details", value: `\`${activeLevels} • ${activeCats}/${LOG_CATEGORIES.length} cats\` (/log_config)`, inline: true },
+        { name: "⚠️ Chat Errors", value: `\`${currentConfig.show_errors_in_chat ? "SHOW" : "HIDE"}\``, inline: true },
+        { name: "📜 Max History", value: `\`${currentConfig.max_history ?? "N/A"}\``, inline: true },
+        { name: "📥 History Fetch", value: `\`${currentConfig.history_fetch_limit ?? 20}\``, inline: true },
+        { name: "📝 Temp Memory", value: `\`${currentConfig.temp_memory_enabled !== false ? `ON (${currentConfig.temp_memory_ttl_minutes ?? 240}m)` : "OFF"}\``, inline: true },
+        { name: "🎯 Trigger Mode", value: `\`${currentConfig.response_mode || "smart"}\``, inline: true },
+        { name: "🎲 Random Rate", value: `\`${currentConfig.random_appear_rate ?? "N/A"}\``, inline: true },
+        { name: "🔇 Silence MS", value: `\`${currentConfig.silence_duration_ms ?? "N/A"}\``, inline: true },
+        { name: "🎙️ Voice Name", value: `\`${currentConfig.voice_name ?? "N/A"}\``, inline: true },
+        { name: "⚡ Model Mode", value: `\`${currentConfig.model_mode || "flash-lite"}\``, inline: true },
+        { name: "⏸️ AI Paused", value: `\`${isAIPaused ? "YES" : "NO"}\``, inline: true },
+      ];
 
       // Thinking effort info
       const te = currentConfig.thinking_effort || { mode: "global", global: "medium", local: {} };
       const localCount = Object.keys(te.local || {}).length;
       const teLabel = `${te.mode || "global"} • ${te.global || "medium"}${te.mode === "local" ? ` (${localCount} model overrides)` : ""}`;
-      embed.addFields({ name: "🧠 Thinking Effort", value: `\`${teLabel}\``, inline: true });
+      fields.push({ name: "🧠 Thinking Effort", value: `\`${teLabel}\``, inline: true });
 
       const greetStatus = currentConfig.greet_new_members !== false ? "✅ ON" : "❌ OFF";
       const greetChannel = currentConfig.greet_channel_id ? ` in <#${currentConfig.greet_channel_id}>` : " (system channel)";
-      embed.addFields({ name: "👋 Member Greeting", value: `${greetStatus}${greetChannel}`, inline: true });
+      fields.push({ name: "👋 Member Greeting", value: `${greetStatus}${greetChannel}`, inline: true });
 
       const feedbackStatus = currentConfig.feedback_system !== false ? "✅ ON (⬆️/⬇️)" : "❌ OFF";
-      embed.addFields({ name: "📊 Feedback Rating", value: feedbackStatus, inline: true });
+      fields.push({ name: "📊 Feedback Rating", value: feedbackStatus, inline: true });
 
       const models = currentConfig.models || {};
       const registry = loadModelRegistry();
@@ -1486,7 +1483,7 @@ client.on("interactionCreate", async (interaction) => {
           const valueText = (rawDisplay !== resolvedDisplay && list.some(m => registry[m]))
             ? `${rawDisplay}\n└ *Active: ${resolvedDisplay}*`
             : resolvedDisplay;
-          embed.addFields({ name: label, value: valueText, inline: false });
+          fields.push({ name: label, value: valueText, inline: false });
         }
       }
 
@@ -1501,9 +1498,9 @@ client.on("interactionCreate", async (interaction) => {
           const valueText = (rawDisplay !== resolvedDisplay && list.some(m => registry[m]))
             ? `${rawDisplay}\n└ *Active: ${resolvedDisplay}*`
             : resolvedDisplay;
-          embed.addFields({ name: `✨ Custom Task: [${catName}]`, value: valueText, inline: false });
+          fields.push({ name: `✨ Custom Task: [${catName}]`, value: valueText, inline: false });
         } else {
-          embed.addFields({ name: `✨ Custom Task: [${catName}]`, value: "*(empty)*", inline: false });
+          fields.push({ name: `✨ Custom Task: [${catName}]`, value: "*(empty)*", inline: false });
         }
       }
 
@@ -1515,7 +1512,7 @@ client.on("interactionCreate", async (interaction) => {
           const count = registry[s]?.length || 0;
           return `• \`${s}\` (${count} model${count !== 1 ? 's' : ''})`;
         }).join("\n");
-        embed.addFields({ name: "📦 Custom Series Pools", value: seriesInfo, inline: false });
+        fields.push({ name: "📦 Custom Series Pools", value: seriesInfo, inline: false });
       }
 
       // Disabled channels
@@ -1523,12 +1520,12 @@ client.on("interactionCreate", async (interaction) => {
       const disabledChsVal = disabledChs.length > 0
         ? disabledChs.map(id => `<#${id}>`).join(", ")
         : "*None (AI active everywhere)*";
-      embed.addFields({ name: "🔇 Disabled Channels", value: disabledChsVal, inline: false });
+      fields.push({ name: "🔇 Disabled Channels", value: disabledChsVal, inline: false });
 
       // Scheduled tasks
       const schedTasks = getScheduledTasks(currentConfig);
       const activeSchedCount = schedTasks.filter(t => t.enabled).length;
-      embed.addFields({
+      fields.push({
         name: "⏰ Scheduled Tasks",
         value: `${schedTasks.length} task(s) (${activeSchedCount} active) — Use \`/schedule_list\` to view`,
         inline: false
@@ -1538,17 +1535,30 @@ client.on("interactionCreate", async (interaction) => {
       const compare = currentConfig.model_compare || { enabled: false, models: [] };
       const compareStatus = compare.enabled ? "✅ ON" : "❌ OFF";
       const compareList = compare.models.length > 0 ? compare.models.map(m => `\`${m}\``).join(", ") : "*(none)*";
-      embed.addFields({ name: "🔬 Model Compare", value: `**Status:** ${compareStatus}\n**Models:** ${compareList}`, inline: false });
+      fields.push({ name: "🔬 Model Compare", value: `**Status:** ${compareStatus}\n**Models:** ${compareList}`, inline: false });
 
       const donatedKeysList = getAllKeys();
       const keysValue = donatedKeysList.length > 0
         ? `\`${donatedKeysList.length}\` key(s) (${donatedKeysList.map(k => k.username || k.userId).join(", ")})`
         : "`0` keys";
-      embed.addFields({ name: "🔑 Donated Keys", value: keysValue, inline: false });
+      fields.push({ name: "🔑 Donated Keys", value: keysValue, inline: false });
+
+      const safeFields = fields.map(f => ({
+        name: String(f.name).substring(0, 256),
+        value: String(f.value || "*(empty)*").substring(0, 1024),
+        inline: !!f.inline,
+      }));
+
+      const embeds = [];
+      for (let i = 0; i < safeFields.length; i += 25) {
+        const embed = new EmbedBuilder().setColor(0x2F3136).addFields(safeFields.slice(i, i + 25));
+        if (i === 0) embed.setTitle("⚙️ Current Bot Configuration");
+        embeds.push(embed);
+      }
 
       const imgCount = getSavedImagesList().length;
-      embed.setFooter({ text: `Image library: ${imgCount} image(s) | Config loaded from config.json` });
-      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+      embeds[embeds.length - 1].setFooter({ text: `Image library: ${imgCount} image(s) | Config loaded from config.json` });
+      return interaction.reply({ embeds: embeds.slice(0, 10), flags: MessageFlags.Ephemeral });
     }
 
     if (interaction.commandName === "logs") {
