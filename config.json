@@ -1,6 +1,5 @@
 {
   "logging": true,
-  "debug_logging": true,
   "show_errors_in_chat": false,
   "max_history": 30,
   "history_fetch_limit": 20,
@@ -29,8 +28,7 @@
       "flash-series"
     ],
     "search": [
-      "flash-lite-series",
-      "flash-series"
+      "search-grounding"
     ],
     "live": [
       "live-series"
@@ -44,11 +42,7 @@
   },
   "model_compare": {
     "enabled": false,
-    "models": [
-      "gemini-3-flash-preview",
-      "gemini-3.5-flash-lite",
-      "gemini-3.1-flash-lite"
-    ]
+    "models": []
   },
   "greet_new_members": true,
   "feedback_system": true,

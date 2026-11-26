@@ -162,7 +162,7 @@ User message: "${text}"`;
       if (reply.includes("2")) return "THINKING";
       return "NORMAL";
     } catch (err) {
-      logger.warn(`Classifier failed on ${model}, trying next...`);
+      logger.warn(`[Classifier] Failed on ${model}, trying next...`);
     }
   }
   return "NORMAL";
@@ -299,8 +299,8 @@ export async function generateReply(channelId, userText, guildId = null, guild =
   const retryDelays = [5000, 15000];
 
   // Log Raw AI Input before querying models
-  logger.log(`\n[Raw AI Input]:\n${formatContentsForLog(contents)}\n--------------------------`);
-  logger.debug(`\n[Raw AI System Instruction]:\n${SYSTEM_PROMPT}\n--------------------------`);
+  logger.rawAI("input", "Raw AI Input", formatContentsForLog(contents));
+  logger.rawAI("system", "Raw AI System Instruction", SYSTEM_PROMPT);
 
   for (const model of modelList) {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -329,7 +329,7 @@ export async function generateReply(channelId, userText, guildId = null, guild =
           await sleep(retryDelays[attempt] || 5000);
           continue;
         }
-        logger.error(`${taskType} task failed on ${model}. Error:`, err.message);
+        logger.error(`[Router] ${taskType} task failed on ${model}. Error:`, err.message);
         reportedIssue += `⚠️ *(Auto-Fallback: \`${taskType}\` task failed on \`${model}\`. Switching to next model...)*\n\n`;
         break;
       }
@@ -356,7 +356,7 @@ export async function generateReply(channelId, userText, guildId = null, guild =
         const thinkingEffort = getThinkingEffort(model, cfg);
         return { text: finalReplyText, model, thinkingEffort };
       } catch (err) {
-        logger.error(`Fallback default model ${model} failed. Error:`, err.message);
+        logger.error(`[Router] Fallback default model ${model} failed. Error:`, err.message);
         reportedIssue += `⚠️ *(Auto-Fallback: \`${model}\` failed...)*\n\n`;
       }
     }
@@ -432,8 +432,8 @@ export async function generateComparisonReply(channelId, userText, guildId = nul
   const SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + memoryBlock + imagesBlock + emojisBlock;
 
   logger.log(`[Compare] Starting comparison across ${compareModels.length} models: ${compareModels.join(", ")}`);
-  logger.log(`\n[Raw AI Input]:\n${formatContentsForLog(contents)}\n--------------------------`);
-  logger.debug(`\n[Raw AI System Instruction]:\n${SYSTEM_PROMPT}\n--------------------------`);
+  logger.rawAI("input", "Raw AI Input", formatContentsForLog(contents));
+  logger.rawAI("system", "Raw AI System Instruction", SYSTEM_PROMPT);
 
   const promises = compareModels.map(async (model) => {
     const start = Date.now();
@@ -444,12 +444,11 @@ export async function generateComparisonReply(channelId, userText, guildId = nul
       });
       const durationMs = Date.now() - start;
       logger.debug(`[Compare] ${model} responded in ${durationMs}ms`);
-      logger.log(`\n[Raw AI Response (${model})]:\n${replyText}\n--------------------------`);
+      logger.rawAI("output", `Raw AI Response (${model})`, replyText);
       return { model, reply: replyText || "(empty response)", error: null, durationMs };
     } catch (err) {
       const durationMs = Date.now() - start;
-      logger.error(`[Compare] ${model} failed (${durationMs}ms):`, err.message);
-      logger.log(`\n[Raw AI Response (${model})]:\n[ERROR: ${err.message}]\n--------------------------`);
+      logger.error(`[Compare] ${model} failed (${durationMs}ms): ${err.message}`);
       return { model, reply: null, error: err.message, durationMs };
     }
   });
@@ -476,8 +475,8 @@ export async function generatePromptReply(prompt, guildId = null, guild = null, 
 
   const contents = [{ role: "user", parts: [{ text: prompt }] }];
 
-  logger.log(`\n[Raw AI Input]:\n[user]: ${prompt}\n--------------------------`);
-  logger.debug(`\n[Raw AI System Instruction]:\n${SYSTEM_PROMPT}\n--------------------------`);
+  logger.rawAI("input", "Raw AI Input", `[user]: ${prompt}`);
+  logger.rawAI("system", "Raw AI System Instruction", SYSTEM_PROMPT);
 
   // 1. Try primary key
   for (const model of modelList) {
@@ -487,7 +486,7 @@ export async function generatePromptReply(prompt, guildId = null, guild = null, 
         temperature: 1.0,
       });
       if (replyText) {
-        logger.log(`\n[Raw AI Response]:\n${replyText}\n--------------------------`);
+        logger.rawAI("output", "Raw AI Response", replyText);
         return replyText;
       }
     } catch (err) {
@@ -507,7 +506,7 @@ export async function generatePromptReply(prompt, guildId = null, guild = null, 
             temperature: 1.0,
           });
           if (replyText) {
-            logger.log(`\n[Raw AI Response]:\n${replyText}\n--------------------------`);
+            logger.rawAI("output", "Raw AI Response", replyText);
             return replyText;
           }
         } catch (err) {

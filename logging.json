@@ -1,0 +1,26 @@
+{
+  "console": true,
+  "file": true,
+  "log_file": "bot.log",
+  "max_file_size_mb": 10,
+  "raw_max_chars": 0,
+  "levels": {
+    "debug": true,
+    "info": true,
+    "warn": true,
+    "error": true
+  },
+  "categories": {
+    "ai_raw_input": true,
+    "ai_raw_output": true,
+    "ai_system_prompt": true,
+    "ai_routing": true,
+    "triggers": true,
+    "discord": true,
+    "memory": true,
+    "scheduler": true,
+    "media": true,
+    "voice": true,
+    "system": true
+  }
+}
