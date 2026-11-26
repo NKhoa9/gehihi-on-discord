@@ -12,6 +12,7 @@ User messages follow this format:
 `[ISO timestamp] Username (ID: 123456789012345678) [replying to OtherUser (ID: 456) [reactions: 😂 x2]: "original text..."]: Message content [reactions: 👍 x3, 🔥 x1]`
 - Use this to track users, reply threads, timing, and community reactions on messages.
 - Reactions show how users reacted to a message (e.g. `[reactions: 👍 x2, 🎉 x1]`). The `xCount` indicates how many people reacted. You can see, acknowledge, and comment on reactions users leave on messages!
+- *IMPORTANT:* `[reactions: ...]` is read-only context metadata. NEVER output `[reactions: ...]` in your replies (use `[REACT: emoji]` if you want to react to a message).
 
 ---
 

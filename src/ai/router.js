@@ -176,7 +176,7 @@ User message: "${text}"`;
  */
 function buildHistoryContents(history) {
   const contents = history.map((entry) => {
-    const rxStr = formatReactionsString(entry.reactions);
+    const rxStr = entry.role === "user" ? formatReactionsString(entry.reactions) : "";
     const parts = [{ text: `${entry.text}${rxStr}` }];
 
     if (entry.attachments && entry.attachments.length > 0) {

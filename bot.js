@@ -887,6 +887,7 @@ client.on("messageCreate", async (message) => {
     logger.rawAI("output", `Raw AI Response (to ${userName} in ${message.channel.id})`, finalReply);
 
     finalReply = processMemoryTags(finalReply, message.guildId, message.channel.id, channelMeta);
+    finalReply = finalReply.replace(/\s*\[reactions:\s*[^\]]*\]/gi, "").trim();
 
     logger.debug(`[Response] Prepared reply for ${userName} in ${message.channel.id} (${finalReply.length} chars)`);
 
