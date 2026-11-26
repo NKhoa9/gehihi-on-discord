@@ -12,7 +12,14 @@ import {
   TextInputStyle,
 } from "discord.js";
 import { loadConfig } from "../utils/config.js";
-import { resolveShowThinkingMode } from "../ai/router.js";
+
+function resolveShowThinkingMode(cfg) {
+  const val = cfg?.show_thinking;
+  if (val === true) return "spoiler";
+  if (!val || val === false) return "off";
+  const lower = String(val).toLowerCase();
+  return ["off", "spoiler", "visible", "embed"].includes(lower) ? lower : "off";
+}
 
 const DRAFT_TTL_MS = 10 * 60 * 1000;
 const pendingDrafts = new Map();
