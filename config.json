@@ -14,7 +14,7 @@
   "show_thinking": "off",
   "thinking_effort": {
     "mode": "global",
-    "global": "medium",
+    "global": "low",
     "local": {}
   },
   "models": {

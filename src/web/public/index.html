@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gemini Bot — Config Dashboard</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div id="toast-container" aria-live="polite"></div>
+
+  <!-- Login View -->
+  <section id="login-view" class="login-wrapper hidden">
+    <div class="login-card">
+      <div class="brand">
+        <span class="brand-icon">⚙️</span>
+        <div>
+          <h1>Gemini Bot Config</h1>
+          <p class="muted">Server Control Panel</p>
+        </div>
+      </div>
+
+      <div id="login-error" class="alert alert-error hidden"></div>
+      <div id="ephemeral-hint" class="alert alert-info hidden">
+        No <code>WEB_PASSWORD</code> is set in <code>.env</code>. Check your server console for the temporary startup token, or set <code>WEB_PASSWORD</code> in your environment.
+      </div>
+
+      <form id="login-form" class="stack">
+        <label class="field">
+          <span>Admin Password / Token</span>
+          <input id="login-password" type="password" placeholder="Enter WEB_PASSWORD or startup token" autocomplete="current-password" required />
+        </label>
+        <button type="submit" class="btn btn-primary full-width">Sign In</button>
+      </form>
+
+      <div id="discord-oauth-wrap" class="hidden">
+        <div class="divider"><span>or</span></div>
+        <a href="/api/auth/discord" class="btn btn-discord full-width">Login with Discord (Admins)</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Main Dashboard -->
+  <div id="app-view" class="app-shell hidden">
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="brand-icon">⚙️</span>
+        <div>
+          <strong>Gemini Bot</strong>
+          <div class="muted small" id="bot-meta">Connecting...</div>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span id="bot-status-pill" class="pill pill-muted">Bot: Checking</span>
+        <button id="pause-toggle-btn" class="btn btn-sm btn-secondary" type="button">⏸️ AI: Active</button>
+        <button id="refresh-all-btn" class="btn btn-sm btn-secondary" type="button">🔄 Refresh</button>
+        <button id="logout-btn" class="btn btn-sm btn-ghost" type="button">Sign Out</button>
+      </div>
+    </header>
+
+    <nav class="tabs" id="nav-tabs">
+      <button class="tab active" data-tab="overview">Overview & Channels</button>
+      <button class="tab" data-tab="sections">Config Sections</button>
+      <button class="tab" data-tab="thinking">Thinking Effort</button>
+      <button class="tab" data-tab="models">Models & Routing</button>
+      <button class="tab" data-tab="logging">Logging & Logs</button>
+      <button class="tab" data-tab="schedule">Scheduled Tasks</button>
+      <button class="tab" data-tab="raw">Raw JSON</button>
+    </nav>
+
+    <main class="content">
+      <!-- Tab: Overview -->
+      <section id="tab-overview" class="tab-panel active">
+        <div class="grid-cards" id="overview-cards"></div>
+
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>🔇 Disabled AI Channels</h2>
+              <p class="muted small">Equivalent to <code>/disable_ai</code> and <code>/enable_ai</code></p>
+            </div>
+          </div>
+          <form id="disable-channel-form" class="inline-form">
+            <select id="disable-channel-select" class="hidden"></select>
+            <input id="disable-channel-input" type="text" placeholder="Discord Channel ID (e.g. 123456789012345678)" />
+            <button type="submit" class="btn btn-danger">Disable Channel</button>
+          </form>
+          <div id="disabled-channels-list" class="chip-list"></div>
+        </div>
+      </section>
+
+      <!-- Tab: Config Sections -->
+      <section id="tab-sections" class="tab-panel hidden">
+        <div id="sections-container" class="sections-grid"></div>
+      </section>
+
+      <!-- Tab: Thinking -->
+      <section id="tab-thinking" class="tab-panel hidden">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>🧠 Thinking Effort & Display</h2>
+              <p class="muted small">Equivalent to <code>/thinking_mode</code>, <code>/thinking_set</code>, <code>/thinking_show</code>, and <code>/thinking_check</code></p>
+            </div>
+          </div>
+          <form id="thinking-global-form" class="form-grid">
+            <label class="field">
+              <span>Mode</span>
+              <select id="thinking-mode">
+                <option value="global">global</option>
+                <option value="local">local</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Global Effort</span>
+              <select id="thinking-global">
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Show Thinking</span>
+              <select id="thinking-show">
+                <option value="off">off</option>
+                <option value="spoiler">spoiler</option>
+                <option value="visible">visible</option>
+                <option value="embed">embed</option>
+              </select>
+            </label>
+            <label class="field checkbox-field">
+              <input id="thinking-window" type="checkbox" />
+              <span>Enable thinking_window (non-Gemini)</span>
+            </label>
+            <div class="form-actions full-span">
+              <button type="submit" class="btn btn-primary">Save Thinking Settings</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h3>Per-Model Local Overrides</h3>
+              <p class="muted small">Active when mode is set to <code>local</code></p>
+            </div>
+          </div>
+          <form id="thinking-local-form" class="inline-form">
+            <input id="thinking-local-model" type="text" placeholder="Model name (e.g. gemini-3.8-flash)" required />
+            <select id="thinking-local-effort">
+              <option value="low">low</option>
+              <option value="medium" selected>medium</option>
+              <option value="high">high</option>
+            </select>
+            <button type="submit" class="btn btn-primary">Add / Update Override</button>
+          </form>
+          <div id="thinking-local-list" class="list-rows"></div>
+        </div>
+      </section>
+
+      <!-- Tab: Models & Routing -->
+      <section id="tab-models" class="tab-panel hidden">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>⚖️ Model Comparison Mode</h2>
+              <p class="muted small">Equivalent to <code>/compare</code>, <code>/compare_add</code>, <code>/compare_remove</code></p>
+            </div>
+            <label class="switch-inline">
+              <input id="compare-enabled" type="checkbox" />
+              <span>Enabled</span>
+            </label>
+          </div>
+          <form id="compare-add-form" class="inline-form">
+            <input id="compare-model-input" type="text" placeholder="Model name to add to comparison" />
+            <button type="submit" class="btn btn-primary">Add Model</button>
+          </form>
+          <div id="compare-models-list" class="chip-list"></div>
+        </div>
+
+        <div class="two-col">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h2>🎯 Task Categories (<code>config.json</code>)</h2>
+                <p class="muted small">Equivalent to <code>/set_models</code>, <code>/model_*</code>, <code>/category_*</code></p>
+              </div>
+            </div>
+            <form id="create-category-form" class="inline-form">
+              <input id="new-category-name" type="text" placeholder="New category name (e.g. coding)" />
+              <button type="submit" class="btn btn-secondary">Create Category</button>
+            </form>
+            <div id="task-categories-list" class="stack"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h2>📦 Series Pools (<code>models.json</code>)</h2>
+                <p class="muted small">Equivalent to <code>/series_*</code></p>
+              </div>
+            </div>
+            <form id="create-series-form" class="inline-form">
+              <input id="new-series-name" type="text" placeholder="New series name (e.g. pro-series)" />
+              <button type="submit" class="btn btn-secondary">Create Series</button>
+            </form>
+            <div id="series-pools-list" class="stack"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab: Logging & Logs -->
+      <section id="tab-logging" class="tab-panel hidden">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>🪵 Logging Configuration</h2>
+              <p class="muted small">Equivalent to <code>/log_config</code></p>
+            </div>
+            <div class="btn-group">
+              <button id="log-reset-btn" class="btn btn-sm btn-secondary" type="button">Reset Defaults</button>
+              <button id="log-clear-btn" class="btn btn-sm btn-danger" type="button">Clear Log File</button>
+            </div>
+          </div>
+
+          <div class="preset-bar" id="log-presets-bar"></div>
+
+          <form id="logging-form" class="stack">
+            <div class="form-grid">
+              <label class="field checkbox-field">
+                <input id="log-master" type="checkbox" />
+                <span>Master logging (<code>config.json</code>)</span>
+              </label>
+              <label class="field checkbox-field">
+                <input id="log-console" type="checkbox" />
+                <span>Console output</span>
+              </label>
+              <label class="field checkbox-field">
+                <input id="log-file" type="checkbox" />
+                <span>File output</span>
+              </label>
+              <label class="field">
+                <span>Max File Size (MB)</span>
+                <input id="log-max-mb" type="number" min="1" step="1" />
+              </label>
+              <label class="field">
+                <span>Raw AI Max Chars (0 = unlimited)</span>
+                <input id="log-raw-chars" type="number" min="0" step="100" />
+              </label>
+            </div>
+
+            <div>
+              <strong class="small">Levels</strong>
+              <div id="log-levels-grid" class="toggle-grid"></div>
+            </div>
+
+            <div>
+              <strong class="small">Categories</strong>
+              <div id="log-categories-grid" class="toggle-grid"></div>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">Save Logging Config</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h3>📜 Log Viewer</h3>
+              <p class="muted small" id="log-file-meta">bot.log</p>
+            </div>
+            <div class="inline-form compact">
+              <select id="log-filter-level">
+                <option value="all">All Levels</option>
+                <option value="debug">debug</option>
+                <option value="info">info</option>
+                <option value="warn">warn</option>
+                <option value="error">error</option>
+              </select>
+              <select id="log-filter-category">
+                <option value="all">All Categories</option>
+              </select>
+              <select id="log-filter-lines">
+                <option value="50">50 lines</option>
+                <option value="100" selected>100 lines</option>
+                <option value="250">250 lines</option>
+              </select>
+              <button id="refresh-logs-btn" class="btn btn-sm btn-secondary" type="button">Reload Logs</button>
+            </div>
+          </div>
+          <pre id="log-viewer" class="log-viewer"></pre>
+        </div>
+      </section>
+
+      <!-- Tab: Scheduled Tasks -->
+      <section id="tab-schedule" class="tab-panel hidden">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>⏰ Add Scheduled Task</h2>
+              <p class="muted small">Equivalent to <code>/schedule_add</code></p>
+            </div>
+          </div>
+          <form id="schedule-add-form" class="form-grid">
+            <label class="field">
+              <span>Channel</span>
+              <select id="sched-channel-select" class="hidden"></select>
+              <input id="sched-channel-input" type="text" placeholder="Discord Channel ID" required />
+            </label>
+            <label class="field">
+              <span>Type</span>
+              <select id="sched-type">
+                <option value="random">random interval</option>
+                <option value="daily">daily fixed UTC</option>
+              </select>
+            </label>
+            <label class="field sched-random-only">
+              <span>Interval Min (minutes)</span>
+              <input id="sched-min" type="number" min="1" value="60" />
+            </label>
+            <label class="field sched-random-only">
+              <span>Interval Max (minutes)</span>
+              <input id="sched-max" type="number" min="2" value="480" />
+            </label>
+            <label class="field sched-daily-only hidden">
+              <span>Hour (0-23 UTC)</span>
+              <input id="sched-hour" type="number" min="0" max="23" value="12" />
+            </label>
+            <label class="field sched-daily-only hidden">
+              <span>Minute (0-59)</span>
+              <input id="sched-minute" type="number" min="0" max="59" value="0" />
+            </label>
+            <label class="field full-span">
+              <span>Prompt</span>
+              <input id="sched-prompt" type="text" placeholder="Send something fun or interesting to the chat" />
+            </label>
+            <div class="form-actions full-span">
+              <button type="submit" class="btn btn-primary">Create Scheduled Task</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Active & Paused Tasks</h3>
+          </div>
+          <div id="schedule-list" class="stack"></div>
+        </div>
+      </section>
+
+      <!-- Tab: Raw JSON -->
+      <section id="tab-raw" class="tab-panel hidden">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>📝 Raw <code>config.json</code> Editor</h2>
+              <p class="muted small">Validated and diff-previewed before writing to disk.</p>
+            </div>
+            <div class="btn-group">
+              <button id="raw-format-btn" class="btn btn-sm btn-secondary" type="button">Format JSON</button>
+              <button id="raw-reload-btn" class="btn btn-sm btn-secondary" type="button">Reload Current</button>
+            </div>
+          </div>
+          <div id="raw-errors" class="alert alert-error hidden"></div>
+          <textarea id="raw-json-editor" class="code-editor" spellcheck="false"></textarea>
+          <div class="form-actions">
+            <button id="raw-review-btn" class="btn btn-primary" type="button">Review Changes & Save</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Diff Confirmation Modal -->
+  <div id="confirm-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <h3 id="confirm-modal-title">Confirm Configuration Changes</h3>
+      <p class="muted small">Review the changes below before writing to <code>config.json</code>:</p>
+      <div id="confirm-diff-list" class="diff-list"></div>
+      <div class="modal-actions">
+        <button id="confirm-cancel-btn" class="btn btn-ghost" type="button">Cancel</button>
+        <button id="confirm-save-btn" class="btn btn-success" type="button">Confirm & Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

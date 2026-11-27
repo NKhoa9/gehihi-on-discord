@@ -48,6 +48,7 @@ import { setLatestFeedback, updateFeedbackScoreFromMessage, clearFeedback, getLa
 import { addKey, removeKey, getAllKeys } from "./src/core/keys.js";
 import { isChannelDisabled, disableChannel, enableChannel, getDisabledChannels } from "./src/core/channel_control.js";
 import { openConfigHub, handleConfigUIInteraction } from "./src/core/config_ui.js";
+import { startWebServer } from "./src/web/server.js";
 import { getScheduledTasks, addScheduledTask, removeScheduledTask, toggleScheduledTask, startAllScheduledTasks, scheduleDailyTask, scheduleRandomTask } from "./src/core/scheduler.js";
 import {
   resolveModelList,
@@ -2359,6 +2360,19 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply({ content: "Failed to delete messages.", flags: MessageFlags.Ephemeral });
     }
   }
+});
+
+startWebServer({
+  client,
+  getAIPaused: () => isAIPaused,
+  setAIPaused: (paused) => { isAIPaused = Boolean(paused); },
+  onScheduleTaskStart: (task) => {
+    if (task.type === "daily") {
+      scheduleDailyTask(task, sendScheduledMessage);
+    } else {
+      scheduleRandomTask(task, sendScheduledMessage);
+    }
+  },
 });
 
 client.login(DISCORD_TOKEN);
