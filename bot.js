@@ -47,6 +47,7 @@ import { generateImage, generateVideo, generateReply, generateComparisonReply, g
 import { setLatestFeedback, updateFeedbackScoreFromMessage, clearFeedback, getLatestFeedback } from "./src/core/feedback.js";
 import { addKey, removeKey, getAllKeys } from "./src/core/keys.js";
 import { isChannelDisabled, disableChannel, enableChannel, getDisabledChannels } from "./src/core/channel_control.js";
+import { openConfigHub, handleConfigUIInteraction } from "./src/core/config_ui.js";
 import { getScheduledTasks, addScheduledTask, removeScheduledTask, toggleScheduledTask, startAllScheduledTasks, scheduleDailyTask, scheduleRandomTask } from "./src/core/scheduler.js";
 import {
   resolveModelList,
@@ -150,32 +151,7 @@ const commands = [
     .setDescription("[Admin] Pause or unpause the AI from responding in text channels"),
   new SlashCommandBuilder()
     .setName("config")
-    .setDescription("[Admin] Change bot configuration settings")
-    .addStringOption(option =>
-      option.setName('setting')
-        .setDescription('The setting to change')
-        .setRequired(true)
-        .addChoices(
-          { name: 'response_mode', value: 'response_mode' },
-          { name: 'max_history', value: 'max_history' },
-          { name: 'history_fetch_limit', value: 'history_fetch_limit' },
-          { name: 'temp_memory_enabled', value: 'temp_memory_enabled' },
-          { name: 'temp_memory_ttl_minutes', value: 'temp_memory_ttl_minutes' },
-          { name: 'random_appear_rate', value: 'random_appear_rate' },
-          { name: 'silence_duration_ms', value: 'silence_duration_ms' },
-          { name: 'voice_name', value: 'voice_name' },
-          { name: 'model_mode', value: 'model_mode' },
-          { name: 'logging', value: 'logging' },
-          { name: 'show_errors_in_chat', value: 'show_errors_in_chat' },
-          { name: 'greet_new_members', value: 'greet_new_members' },
-          { name: 'greet_channel_id', value: 'greet_channel_id' },
-          { name: 'thinking_mode', value: 'thinking_mode' },
-          { name: 'thinking_effort', value: 'thinking_effort' },
-          { name: 'thinking_window', value: 'thinking_window' },
-          { name: 'show_thinking', value: 'show_thinking' },
-          { name: 'feedback_system', value: 'feedback_system' }
-        ))
-    .addStringOption(option => option.setName('value').setDescription('The new value (or "none" to clear)').setRequired(true)),
+    .setDescription("[Admin] Open the interactive bot configuration form"),
   new SlashCommandBuilder()
     .setName("config_check")
     .setDescription("[Admin] View the current bot configuration"),
@@ -1235,6 +1211,19 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
+  if (interaction.isStringSelectMenu() || interaction.isButton() || interaction.isModalSubmit()) {
+    try {
+      const handled = await handleConfigUIInteraction(interaction);
+      if (handled) return;
+    } catch (err) {
+      logger.error("[ConfigUI] Interaction error:", err);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({ content: `❌ Config UI error: ${err.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+      }
+      return;
+    }
+  }
+
   if (!interaction.isChatInputCommand()) return;
   logger.log(`[Command] ${interaction.user.tag} used /${interaction.commandName}`);
 
@@ -1375,89 +1364,7 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.commandName === "config") {
-      const setting = interaction.options.getString('setting');
-      const valueStr = interaction.options.getString('value');
-      let newValue = valueStr;
-      if (setting === "max_history" || setting === "silence_duration_ms" || setting === "history_fetch_limit" || setting === "temp_memory_ttl_minutes") {
-        newValue = parseInt(valueStr, 10);
-        if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid integer.", flags: MessageFlags.Ephemeral });
-        if (setting === "history_fetch_limit" && (newValue < 0 || newValue > 100)) {
-          return interaction.reply({ content: "❌ `history_fetch_limit` must be between `0` and `100`.", flags: MessageFlags.Ephemeral });
-        }
-        if (setting === "temp_memory_ttl_minutes" && newValue < 1) {
-          return interaction.reply({ content: "❌ `temp_memory_ttl_minutes` must be at least `1`.", flags: MessageFlags.Ephemeral });
-        }
-      } else if (setting === "response_mode") {
-        const lower = valueStr.toLowerCase();
-        if (lower !== "smart" && lower !== "random") {
-          return interaction.reply({ content: "❌ Value for `response_mode` must be `smart` or `random`.", flags: MessageFlags.Ephemeral });
-        }
-        newValue = lower;
-      } else if (setting === "random_appear_rate") {
-        newValue = parseFloat(valueStr);
-        if (isNaN(newValue)) return interaction.reply({ content: "❌ Value must be a valid number (e.g. 0.1).", flags: MessageFlags.Ephemeral });
-      } else if (setting === "logging" || setting === "greet_new_members" || setting === "feedback_system" || setting === "temp_memory_enabled" || setting === "thinking_window") {
-        const lower = valueStr.toLowerCase();
-        if (lower === "true" || lower === "on" || lower === "1") newValue = true;
-        else if (lower === "false" || lower === "off" || lower === "0") newValue = false;
-        else return interaction.reply({ content: "❌ Value must be `true`/`on` or `false`/`off`.", flags: MessageFlags.Ephemeral });
-      } else if (setting === "greet_channel_id") {
-        if (valueStr.toLowerCase() === "none" || valueStr.toLowerCase() === "clear") {
-          newValue = null;
-        } else {
-          newValue = valueStr.replace(/[<#>]/g, "").trim();
-        }
-      } else if (setting === "model_mode") {
-        const lower = valueStr.toLowerCase();
-        if (lower !== "flash" && lower !== "flash-lite") {
-          return interaction.reply({ content: "❌ Value for `model_mode` must be `flash` or `flash-lite`.", flags: MessageFlags.Ephemeral });
-        }
-        newValue = lower;
-      } else if (setting === "thinking_mode") {
-        const lower = valueStr.toLowerCase();
-        if (lower !== "global" && lower !== "local") {
-          return interaction.reply({ content: "❌ Value for `thinking_mode` must be `global` or `local`.", flags: MessageFlags.Ephemeral });
-        }
-        const currentConfig = loadConfig();
-        if (!currentConfig.thinking_effort) currentConfig.thinking_effort = { mode: "global", global: "medium", local: {} };
-        currentConfig.thinking_effort.mode = lower;
-        try {
-          fs.writeFileSync("config.json", JSON.stringify(currentConfig, null, 2), "utf-8");
-          return interaction.reply({ content: `✅ Config updated: \`thinking_mode\` is now \`${lower}\`.`, flags: MessageFlags.Ephemeral });
-        } catch (err) {
-          return interaction.reply({ content: `❌ Failed to save config: ${err.message}`, flags: MessageFlags.Ephemeral });
-        }
-      } else if (setting === "thinking_effort") {
-        const lower = valueStr.toLowerCase();
-        if (!["low", "medium", "high"].includes(lower)) {
-          return interaction.reply({ content: "❌ Value for `thinking_effort` must be `low`, `medium`, or `high`.", flags: MessageFlags.Ephemeral });
-        }
-        const currentConfig = loadConfig();
-        if (!currentConfig.thinking_effort) currentConfig.thinking_effort = { mode: "global", global: "medium", local: {} };
-        currentConfig.thinking_effort.global = lower;
-        try {
-          fs.writeFileSync("config.json", JSON.stringify(currentConfig, null, 2), "utf-8");
-          return interaction.reply({ content: `✅ Config updated: \`thinking_effort\` (global) is now \`${lower}\`.`, flags: MessageFlags.Ephemeral });
-        } catch (err) {
-          return interaction.reply({ content: `❌ Failed to save config: ${err.message}`, flags: MessageFlags.Ephemeral });
-        }
-      } else if (setting === "show_thinking") {
-        const lower = valueStr.toLowerCase();
-        const mapped = lower === "true" || lower === "on" ? "spoiler" : (lower === "false" ? "off" : lower);
-        if (!["off", "spoiler", "visible", "embed"].includes(mapped)) {
-          return interaction.reply({ content: "❌ Value for `show_thinking` must be `off`, `spoiler`, `visible`, or `embed`.", flags: MessageFlags.Ephemeral });
-        }
-        newValue = mapped;
-      }
-
-      const currentConfig = loadConfig();
-      currentConfig[setting] = newValue;
-      try {
-        fs.writeFileSync("config.json", JSON.stringify(currentConfig, null, 2), "utf-8");
-        return interaction.reply({ content: `✅ Config updated: \`${setting}\` is now \`${newValue}\`.`, flags: MessageFlags.Ephemeral });
-      } catch (err) {
-        return interaction.reply({ content: `❌ Failed to save config: ${err.message}`, flags: MessageFlags.Ephemeral });
-      }
+      return await openConfigHub(interaction);
     }
 
     if (interaction.commandName === "add_image") {

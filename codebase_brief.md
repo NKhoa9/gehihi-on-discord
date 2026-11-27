@@ -21,6 +21,7 @@ Welcome to the Gemini Discord Bot codebase! This document provides a comprehensi
 - `src/ai/models.js` — Model registry management, series resolution, category and series manipulation.
 - `src/ai/router.js` — Dynamic prompt classification, model fallback router, comparison mode, one-shot prompt generation, and RAW AI input/output logging.
 - `src/core/channel_control.js` — Per-channel AI enable/disable management.
+- `src/core/config_ui.js` — Interactive `/config` hub, pre-filled Discord modals, syntax/type validation, draft retry, and Confirm/Cancel diff preview.
 - `src/core/scheduler.js` — Autonomous scheduled tasks (random intervals or fixed daily UTC times).
 - `src/core/trigger.js` — Smart contextual response trigger algorithm (beta) vs classic random appear rate.
 - `src/core/emojis.js` — Server custom emoji awareness, prompt injection, and bidirectional name/ID resolution.
@@ -44,6 +45,11 @@ All tunable settings live in `config.json` for quick changes without touching co
 - `silence_duration_ms` — Voice silence threshold before the bot considers the user done speaking (default: 200).
 - `voice_name` — Gemini Live voice persona (e.g., "Aoede", "Charon", "Fenrir", "Kore", "Puck").
 - `model_mode` — Default model selection preference (`flash` vs `flash-lite`).
+- `max_continuation` — Maximum number of `[CONTINUE]` multi-message follow-ups per reply (default: `3`).
+- `thinking_window` — Enables `<think>...</think>` scratchpad for non-Gemini models (default: `true`).
+- `show_thinking` — Controls displaying AI thoughts in chat: `"off"`, `"spoiler"`, `"visible"`, or `"embed"` (default: `"off"`).
+- `thinking_effort` — Configures thinking budget/level (`mode`: `"global"` | `"local"`, `global`: `"low"` | `"medium"` | `"high"`, `local`: per-model overrides).
+- `feedback_system` — Toggles automatic `⬆️`/`⬇️` feedback reactions on bot replies (default: `true`).
 - `greet_new_members` — Toggle autonomous AI greeting for new members joining the server (default: `true`).
 - `greet_channel_id` — (Optional) Specific channel ID for greetings; defaults to system channel or first sendable text channel.
 - `disabled_channels` — Array of channel IDs where the AI is completely disabled from auto-responding.
@@ -143,8 +149,10 @@ Persistent AI memory stored in `memories.json` with a two-tier classification:
 **Admin Commands (Requires User ID to be in `ADMINS` inside `.env`)**:
 - `/reset_memory` — Completely wipes the AI's saved memories for the server.
 - `/pause_ai` — Toggles pausing/unpausing the AI from generating text responses globally.
-- `/config [setting] [value]` — Updates `config.json` settings directly from Discord.
-- `/config_check` — Displays the complete bot configuration, model categories, series pools, disabled channels, and scheduled tasks in a rich embed.
+- `/config` — Opens an interactive ephemeral configuration hub with section dropdowns, pre-filled modals, validation with draft-preserving retry, a raw `config.json` editor, and Confirm/Cancel diff preview before saving.
+- `/config_check` — Displays the complete bot configuration, model categories, series pools, disabled channels, and scheduled tasks in rich embeds (auto-chunked at 25 fields).
+- `/thinking_set` / `/thinking_mode` / `/thinking_check` / `/thinking_show` — Manages thinking effort (`low`/`medium`/`high`, global vs. local) and chat thinking display (`off`/`spoiler`/`visible`/`embed`).
+- `/feedback` — Toggles the `⬆️`/`⬇️` AI response feedback reaction system.
 - `/logs [lines]` — Views recent log entries.
 - `/disable_ai [channel]` — Disables AI responses in a channel.
 - `/enable_ai [channel]` — Re-enables AI responses in a channel.
