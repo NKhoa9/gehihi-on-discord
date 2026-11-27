@@ -41,15 +41,68 @@ export function getThinkingEffort(model, cfg) {
  * @param {object} cfg
  * @returns {{ thinkingConfig: object } | {}}
  */
+export function resolveShowThinkingMode(cfg) {
+  const val = cfg?.show_thinking;
+  if (val === true) return "spoiler";
+  if (!val || val === false) return "off";
+  const lower = String(val).toLowerCase();
+  return ["off", "spoiler", "visible", "embed"].includes(lower) ? lower : "off";
+}
+
 export function getThinkingConfig(model, cfg) {
   const m = (model || "").toLowerCase();
   if (!m.startsWith("gemini")) return {};
   const effort = getThinkingEffort(model, cfg);
+  const includeThoughts = resolveShowThinkingMode(cfg) !== "off";
   if (m.includes("2.5")) {
     const budgetMap = { low: 1024, medium: 4096, high: 16384 };
-    return { thinkingConfig: { thinkingBudget: budgetMap[effort] || 4096 } };
+    return {
+      thinkingConfig: {
+        thinkingBudget: budgetMap[effort] || 4096,
+        ...(includeThoughts ? { includeThoughts: true } : {}),
+      }
+    };
   }
-  return { thinkingConfig: { thinkingLevel: effort.toUpperCase() } };
+  return {
+    thinkingConfig: {
+      thinkingLevel: effort.toUpperCase(),
+      ...(includeThoughts ? { includeThoughts: true } : {}),
+    }
+  };
+}
+
+const PROMPT_THINKING_INSTRUCTION = `\n\n--- THINKING WINDOW ---\nBefore answering, briefly think through your response inside <think>...</think> tags. Keep your thinking concise and focused. Write your actual Discord reply after </think>.`;
+
+function prepareModelCall(model, cfg, baseSystemPrompt, taskType, useSearch) {
+  const isGemini = (model || "").toLowerCase().startsWith("gemini");
+  const usePromptThinking = !isGemini && cfg?.thinking_window !== false;
+  const systemInstruction = usePromptThinking
+    ? baseSystemPrompt + PROMPT_THINKING_INSTRUCTION
+    : baseSystemPrompt;
+
+  const config = {
+    systemInstruction,
+    temperature: taskType === "NORMAL" ? 1.0 : 0.7,
+    ...getThinkingConfig(model, cfg),
+  };
+  if (useSearch) config.tools = [{ googleSearch: {} }];
+  return config;
+}
+
+function parseReplyWithThoughts(result, model) {
+  let text = result?.text || "";
+  let thoughts = (result?.thoughts || "").trim();
+
+  const thinkMatches = [...text.matchAll(/<think>([\s\S]*?)<\/think>/gi)];
+  if (thinkMatches.length > 0) {
+    const extracted = thinkMatches.map(m => m[1].trim()).filter(Boolean).join("\n");
+    if (extracted) {
+      thoughts = thoughts ? `${thoughts}\n${extracted}` : extracted;
+    }
+    text = text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  }
+
+  return { text, thoughts };
 }
 
 export const aiProvider = new GeminiProvider(process.env.GEMINI_API_KEY);
@@ -176,7 +229,7 @@ User message: "${text}"`;
  */
 function buildHistoryContents(history) {
   const contents = history.map((entry) => {
-    const rxStr = formatReactionsString(entry.reactions);
+    const rxStr = entry.role === "user" ? formatReactionsString(entry.reactions) : "";
     const parts = [{ text: `${entry.text}${rxStr}` }];
 
     if (entry.attachments && entry.attachments.length > 0) {
@@ -305,24 +358,16 @@ export async function generateReply(channelId, userText, guildId = null, guild =
   for (const model of modelList) {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
-        const config = {
-          systemInstruction: SYSTEM_PROMPT,
-          temperature: 0.7,
-          ...getThinkingConfig(model, cfg),
-        };
-        if (useSearch) config.tools = [{ googleSearch: {} }];
-        else if (taskType === "NORMAL") {
-          config.temperature = 1.0;
-        }
-
-        const replyText = await aiProvider.generateText(model, contents, config);
-        let finalReplyText = replyText || "hmm, I got nothing 🤔";
+        const config = prepareModelCall(model, cfg, SYSTEM_PROMPT, taskType, useSearch);
+        const rawResult = await aiProvider.generateTextWithThoughts(model, contents, config);
+        const { text: parsedText, thoughts } = parseReplyWithThoughts(rawResult, model);
+        let finalReplyText = parsedText || "hmm, I got nothing 🤔";
         if (reportedIssue && cfg.show_errors_in_chat !== false) {
           finalReplyText = reportedIssue + finalReplyText;
         }
 
         const thinkingEffort = getThinkingEffort(model, cfg);
-        return { text: finalReplyText, model, thinkingEffort };
+        return { text: finalReplyText, thoughts, model, thinkingEffort };
       } catch (err) {
         const is429 = err?.message?.includes('"code":429') || err?.message?.includes("RESOURCE_EXHAUSTED") || err?.message?.includes("QUOTA_EXCEEDED") || err?.status === 429;
         if (is429 && attempt < MAX_RETRIES) {
@@ -341,20 +386,17 @@ export async function generateReply(channelId, userText, guildId = null, guild =
     for (const model of modelsDefault) {
       try {
         logger.debug(`[Router] Attempting ultimate fallback model: ${model}`);
-        const fallbackConfig = {
-          systemInstruction: SYSTEM_PROMPT,
-          temperature: 1.0,
-          ...getThinkingConfig(model, cfg),
-        };
-        const replyText = await aiProvider.generateText(model, contents, fallbackConfig);
-        let finalReplyText = replyText || "hmm, I got nothing 🤔";
+        const fallbackConfig = prepareModelCall(model, cfg, SYSTEM_PROMPT, "NORMAL", false);
+        const rawResult = await aiProvider.generateTextWithThoughts(model, contents, fallbackConfig);
+        const { text: parsedText, thoughts } = parseReplyWithThoughts(rawResult, model);
+        let finalReplyText = parsedText || "hmm, I got nothing 🤔";
 
         if (reportedIssue && cfg.show_errors_in_chat !== false) {
           finalReplyText = reportedIssue + finalReplyText;
         }
 
         const thinkingEffort = getThinkingEffort(model, cfg);
-        return { text: finalReplyText, model, thinkingEffort };
+        return { text: finalReplyText, thoughts, model, thinkingEffort };
       } catch (err) {
         logger.error(`[Router] Fallback default model ${model} failed. Error:`, err.message);
         reportedIssue += `⚠️ *(Auto-Fallback: \`${model}\` failed...)*\n\n`;
@@ -374,21 +416,16 @@ export async function generateReply(channelId, userText, guildId = null, guild =
 
       for (const model of fallbackModels) {
         try {
-          const donatedConfig = {
-            systemInstruction: SYSTEM_PROMPT,
-            temperature: taskType === "NORMAL" ? 1.0 : 0.7,
-            ...getThinkingConfig(model, cfg),
-          };
-          if (useSearch) donatedConfig.tools = [{ googleSearch: {} }];
-
-          const replyText = await tempProvider.generateText(model, contents, donatedConfig);
-          let finalReplyText = replyText || "hmm, I got nothing 🤔";
+          const donatedConfig = prepareModelCall(model, cfg, SYSTEM_PROMPT, taskType, useSearch);
+          const rawResult = await tempProvider.generateTextWithThoughts(model, contents, donatedConfig);
+          const { text: parsedText, thoughts } = parseReplyWithThoughts(rawResult, model);
+          let finalReplyText = parsedText || "hmm, I got nothing 🤔";
           logger.log(`[Router] Donated key #${k + 1} succeeded on ${model}`);
           if (reportedIssue && cfg.show_errors_in_chat !== false) {
             finalReplyText = reportedIssue + finalReplyText;
           }
           const thinkingEffort = getThinkingEffort(model, cfg);
-          return { text: finalReplyText, model, thinkingEffort };
+          return { text: finalReplyText, thoughts, model, thinkingEffort };
         } catch (err) {
           const is429 = err?.message?.includes('"code":429') || err?.message?.includes("RESOURCE_EXHAUSTED") || err?.message?.includes("QUOTA_EXCEEDED") || err?.status === 429;
           logger.warn(`[Router] Donated key #${k + 1} failed on ${model}: ${err.message}`);
@@ -404,7 +441,7 @@ export async function generateReply(channelId, userText, guildId = null, guild =
   const fatalMsg = (cfg.show_errors_in_chat === false)
     ? "⚠️ *[All models failed - check logs]* I had an error with all available models. Out of tokens or quota! 🤦‍♂️"
     : reportedIssue + "I had an error with all available models. Out of tokens or quota! 🤦‍♂️";
-  return { text: fatalMsg, model: "none" };
+  return { text: fatalMsg, thoughts: "", model: "none" };
 }
 
 /**

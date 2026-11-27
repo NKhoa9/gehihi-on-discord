@@ -43,7 +43,7 @@ import {
 } from "./src/core/history.js";
 import { cacheAttachments } from "./src/media/attachments.js";
 import { getSavedImagesList, getSavedImage, downloadImageToLib, searchGoogleImage } from "./src/media/images.js";
-import { generateImage, generateVideo, generateReply, generateComparisonReply, generatePromptReply, getThinkingEffort, maybeUpdateTempMemory } from "./src/ai/router.js";
+import { generateImage, generateVideo, generateReply, generateComparisonReply, generatePromptReply, getThinkingEffort, resolveShowThinkingMode, maybeUpdateTempMemory } from "./src/ai/router.js";
 import { setLatestFeedback, updateFeedbackScoreFromMessage, clearFeedback, getLatestFeedback } from "./src/core/feedback.js";
 import { addKey, removeKey, getAllKeys } from "./src/core/keys.js";
 import { isChannelDisabled, disableChannel, enableChannel, getDisabledChannels } from "./src/core/channel_control.js";
@@ -523,6 +523,19 @@ const commands = [
     .setName("thinking_check")
     .setDescription("[Admin] View the current thinking effort configuration"),
   new SlashCommandBuilder()
+    .setName("thinking_show")
+    .setDescription("[Admin] Configure whether and how AI thinking is shown in responses")
+    .addStringOption(option =>
+      option.setName('mode')
+        .setDescription('How to display AI thinking in chat')
+        .setRequired(true)
+        .addChoices(
+          { name: 'off (hide thinking, AI still thinks internally)', value: 'off' },
+          { name: 'spoiler (show thinking inside ||spoiler|| tags)', value: 'spoiler' },
+          { name: 'visible (show thinking in a blockquote)', value: 'visible' },
+          { name: 'embed (show thinking in a separate embed)', value: 'embed' }
+        )),
+  new SlashCommandBuilder()
     .setName("feedback")
     .setDescription("[Admin] Toggle or check the AI response feedback reaction feature")
     .addStringOption(option =>
@@ -855,6 +868,7 @@ client.on("messageCreate", async (message) => {
     );
 
     const replyText = typeof replyResult === "object" ? replyResult.text : replyResult;
+    const modelThoughts = typeof replyResult === "object" ? (replyResult.thoughts || "").trim() : "";
     const modelUsed = typeof replyResult === "object" ? replyResult.model : null;
     const thinkingEffort = typeof replyResult === "object" ? replyResult.thinkingEffort : null;
     const modelFooter = modelUsed && modelUsed !== "none"
@@ -863,8 +877,12 @@ client.on("messageCreate", async (message) => {
 
     let finalReply = (replyText || "").trim();
     logger.rawAI("output", `Raw AI Response (to ${userName} in ${message.channel.id})`, finalReply);
+    if (modelThoughts) {
+      logger.rawAI("output", `Raw AI Thinking (${modelUsed || "unknown"})`, modelThoughts);
+    }
 
     finalReply = processMemoryTags(finalReply, message.guildId, message.channel.id, channelMeta);
+    finalReply = finalReply.replace(/\s*\[reactions:\s*[^\]]*\]/gi, "").trim();
 
     logger.debug(`[Response] Prepared reply for ${userName} in ${message.channel.id} (${finalReply.length} chars)`);
 
@@ -998,6 +1016,26 @@ client.on("messageCreate", async (message) => {
 
     const hasModelFootnote = !!modelFooter;
 
+    const showThinkingMode = resolveShowThinkingMode(cfg);
+    let thinkingEmbed = null;
+    if (modelThoughts && showThinkingMode !== "off") {
+      if (showThinkingMode === "spoiler") {
+        const clipped = modelThoughts.length > 900 ? `${modelThoughts.substring(0, 897)}...` : modelThoughts;
+        const safe = clipped.replace(/\|\|/g, "| |");
+        finalReply = `> 💭 **Thinking:** ||${safe}||\n\n${finalReply}`;
+      } else if (showThinkingMode === "visible") {
+        const clipped = modelThoughts.length > 900 ? `${modelThoughts.substring(0, 897)}...` : modelThoughts;
+        const quoted = clipped.split("\n").map(line => `> ${line}`).join("\n");
+        finalReply = `> 💭 **Thinking:**\n${quoted}\n\n${finalReply}`;
+      } else if (showThinkingMode === "embed") {
+        thinkingEmbed = new EmbedBuilder()
+          .setColor(0x4F545C)
+          .setTitle("💭 AI Thinking")
+          .setDescription(modelThoughts.substring(0, 4096));
+        replyOpts.embeds = [thinkingEmbed];
+      }
+    }
+
     let sentMsg = null;
     if (shouldEmbed) {
       let isParsedJson = false;
@@ -1024,7 +1062,7 @@ client.on("messageCreate", async (message) => {
             } else if (hasModelFootnote) {
               embed.setFooter({ text: ` ${modelFooter}` });
             }
-            sentMsg = await message.reply({ ...replyOpts, embeds: [embed] });
+            sentMsg = await message.reply({ ...replyOpts, embeds: thinkingEmbed ? [thinkingEmbed, embed] : [embed] });
             isParsedJson = true;
           }
         }
@@ -1283,7 +1321,7 @@ client.on("interactionCreate", async (interaction) => {
     "disable_ai", "enable_ai",
     "schedule_add", "schedule_remove", "schedule_toggle", "schedule_list",
     "series_create", "series_delete", "category_create", "category_delete",
-    "thinking_set", "thinking_mode", "thinking_check", "feedback"
+    "thinking_set", "thinking_mode", "thinking_check", "thinking_show", "feedback"
   ];
   if (adminCommands.includes(interaction.commandName)) {
     const adminEnv = process.env.ADMINS || "";
@@ -1372,6 +1410,7 @@ client.on("interactionCreate", async (interaction) => {
       const localCount = Object.keys(te.local || {}).length;
       const teLabel = `${te.mode || "global"} • ${te.global || "medium"}${te.mode === "local" ? ` (${localCount} model overrides)` : ""}`;
       fields.push({ name: "🧠 Thinking Effort", value: `\`${teLabel}\``, inline: true });
+      fields.push({ name: "💭 Show Thinking", value: `\`${resolveShowThinkingMode(currentConfig)}\` (window: \`${currentConfig.thinking_window !== false ? "ON" : "OFF"}\`)`, inline: true });
 
       const greetStatus = currentConfig.greet_new_members !== false ? "✅ ON" : "❌ OFF";
       const greetChannel = currentConfig.greet_channel_id ? ` in <#${currentConfig.greet_channel_id}>` : " (system channel)";
@@ -2149,6 +2188,8 @@ client.on("interactionCreate", async (interaction) => {
         .addFields(
           { name: "Current Mode", value: `\`${te.mode || "global"}\``, inline: true },
           { name: "Global Setting", value: `\`${te.global || "medium"}\``, inline: true },
+          { name: "Show Thinking", value: `\`${resolveShowThinkingMode(currentConfig)}\``, inline: true },
+          { name: "Thinking Window (non-Gemini)", value: `\`${currentConfig.thinking_window !== false ? "ON" : "OFF"}\``, inline: true },
         );
 
       const localMap = te.local || {};
@@ -2166,6 +2207,23 @@ client.on("interactionCreate", async (interaction) => {
           : "Currently active: local overrides (unconfigured models use global)"
       });
       return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    }
+
+    if (interaction.commandName === "thinking_show") {
+      const mode = interaction.options.getString('mode').toLowerCase();
+      const currentConfig = loadConfig();
+      currentConfig.show_thinking = mode;
+      fs.writeFileSync("config.json", JSON.stringify(currentConfig, null, 2), "utf-8");
+      const descriptions = {
+        off: "Thinking is hidden from chat (AI still thinks internally).",
+        spoiler: "AI thinking will be shown inside `||spoiler||` tags above the reply.",
+        visible: "AI thinking will be shown in a visible blockquote above the reply.",
+        embed: "AI thinking will be shown in a separate embed alongside the reply.",
+      };
+      return interaction.reply({
+        content: `✅ \`show_thinking\` set to \`${mode}\`.\n${descriptions[mode] || ""}`,
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
     if (interaction.commandName === "feedback") {
